@@ -1,0 +1,112 @@
+/*
+RPPD - Rust Python Postgres Discovery
+
+This file is part of RPPD.
+
+RPPD is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version OR the.
+
+RPPD is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with RPPD.  If not, see <http://www.gnu.org/licenses/>.
+
+The portion above shall not be modified.
+*/
+
+syntax = "proto3";
+
+package rg;
+
+enum DbAction {
+	UPDATE = 0;
+	INSERT = 1;
+	DELETE = 2;
+	TRUNCATE = 3;
+}
+
+message EventRequest {
+	// schema.table
+	string table_name = 1;
+	DbAction event_type = 2;
+	// if false, then pk_value took by previous call of EventResponse.column_name
+	// this is implemented to avoid complex solution for a topic names
+	bool id_value = 3;
+	// rppd_config.id of caller host or None if called by trigger
+	oneof optional_caller {
+			int32 call_by = 4;
+	}
+	// to do: add column type and return values of different types
+	oneof pk_value {
+		int32 int_value = 5;
+		int64 bigint_value = 6;
+	}
+}
+
+enum PkColumnType {
+  Int = 0;
+  BigInt = 1;
+}
+
+
+message PkColumn {
+  string column_name = 1;
+	// default Int
+	PkColumnType column_type = 2;
+}
+
+message EventResponse {
+	// return None, if nothing else required - not configured, nor operatable
+	oneof event_response {
+		bool saved = 1;
+		// needs to call again with column name data
+	  PkColumn repeat_with = 2;
+	}
+
+}
+
+enum FnAction {
+	// not found, might be completed and cleaned
+	NA = 0;
+	// executing
+	IN_PROGRESS = 1;
+	// recently done
+	COMPLETED_OK = 2;
+	// recently fail
+	FAIL = 3;
+}
+
+message StatusRequest {
+	// master node id to check configuration consistency
+	int32 master = 1;
+	// function status as id from rppd_fn_log
+	int64 fn_log_id = 2;
+
+}
+
+message StatusResponse {
+	// master node id to check configuration consistency
+	int32 master = 1;
+	// status of requested function
+	FnAction status = 2;
+	// total in queue
+	int32 queued = 3;
+	// total in progress
+	int32 in_proc = 4;
+}
+
+
+//The GRPC service
+service Grpc {
+  // call by trigger
+	rpc event(EventRequest) returns (EventResponse) {}
+
+  // call between nodes
+	rpc status(StatusRequest) returns (StatusResponse) {}
+
+}
