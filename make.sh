@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+#/*%LPH%*/
 
 pgv=$(pg_config --version)
 v=${pgv:11:2}
