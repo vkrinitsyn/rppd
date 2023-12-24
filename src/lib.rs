@@ -13,9 +13,9 @@ use tokio::runtime::{Builder, Runtime};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
-use crate::gen::rg::{DbAction, event_request, EventRequest, EventResponse, PkColumnType};
-use crate::gen::rg::event_response::EventResponse::RepeatWith;
+use crate::gen::rg::{DbAction, EventRequest, EventResponse, PkColumn, PkColumnType};
 use crate::gen::rg::grpc_client::GrpcClient;
+use crate::gen::rg::pk_column::PkValue::{BigintValue, IntValue};
 
 pgrx::pg_module_magic!();
 
@@ -80,8 +80,10 @@ fn rppd_event<'a>(
 			trigger.new().ok_or(PgTriggerError::NotTrigger)?//.into_owned()
 		};
 
-	let pk_value = current.get_by_name::<i32>("id")
-		.unwrap_or(None).map(|v| event_request::PkValue::IntValue(v));
+	let mut pks = vec![];
+	if let Ok(v) = current.get_by_name::<i32>("id") {
+		pks.push(PkColumn{column_name: "id".to_string(), column_type: 0, pk_value: v.map(|v| IntValue(v)) });
+	}
 
 	let table_name = trigger.table_name().unwrap_or("".into());
 	if table_name.as_str() == CONFIG_TABLE
@@ -139,24 +141,27 @@ fn rppd_event<'a>(
 	};
 
 	let table_name = format!("{}.{}", trigger.table_schema().unwrap_or("public".into()), table_name);
-	let event = EventRequest {table_name, event_type, id_value: false, pk_value, optional_caller: None};
+	let event = EventRequest {table_name, event_type, id_value: false, pks: pks.clone(), optional_caller: None};
 
 	match call(event.clone()) {
 		Ok(event_response) => {
-			if let Some(event_response) = event_response.event_response {
-				if let RepeatWith(column) = event_response {
-					let pk_value = match column.column_type {
-						1 => { //PkColumnType::BigInt => {
-							current.get_by_name::<i64>(column.column_name.as_str()).unwrap_or(None)
-								.map(|v| event_request::PkValue::BigintValue(v))
-						}
-						_ => current.get_by_name::<i32>(column.column_name.as_str()).unwrap_or(None)
-							.map(|v| event_request::PkValue::IntValue(v))
-					};
+			for column in &event_response.repeat_with {
 
-					let _ = call(EventRequest{pk_value, id_value: true, ..event});
-				}
+				let pk_value = match column.column_type {
+					1 => {
+						assert_eq!((PkColumnType::BigInt as i32), 1);
+						current.get_by_name::<i64>(column.column_name.as_str()).unwrap_or(None)
+							.map(|v| BigintValue(v))
+					}
+					_ => current.get_by_name::<i32>(column.column_name.as_str()).unwrap_or(None)
+						.map(|v| IntValue(v))
+				};
+				pks.push(PkColumn {pk_value, ..column.clone() });
 			}
+			if event_response.repeat_with.len() > 0 {
+				let _ = call(EventRequest{pks, id_value: true, ..event});
+			}
+
 			Ok(Some(current))
 		}
 		Err(e) => {

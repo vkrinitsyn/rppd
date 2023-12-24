@@ -1,7 +1,7 @@
 /*%LPH%*/
 
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use sqlx::{Database, PgPool, Pool, Postgres};
 use crate::gen::rg::grpc_client::GrpcClient;
 use crate::gen::rg::*;
@@ -13,6 +13,7 @@ use async_trait::async_trait;use rust_embed::RustEmbed;
 use lazy_static::lazy_static;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::time::Instant;
 use pgrx::PgTriggerError;
 use tonic::{Request, Response, Status};
 use sqlx::postgres::PgPoolOptions;
@@ -25,11 +26,13 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tonic::codegen::Body;
 use crate::arg_config::*;
 use crate::gen::rg::*;
-use crate::gen::rg::event_request::PkValue;
-use crate::gen::rg::event_response::EventResponse::RepeatWith;
+use crate::gen::rg::pk_column::PkValue;
+use crate::gen::rg::pk_column::PkValue::{BigintValue, IntValue};
 use crate::rd_fn::*;
 
-const SELECT: &str = "select id, host, alias, active_since, master from %SCHEMA%.rppd_config where active_since is not null";
+const SELECT: &str = "select id, host, host_name, active_since, master, max_db_connections from %SCHEMA%.rppd_config where ()";
+const INSERT_HOST: &str = "insert into %SCHEMA%.rppd_config (host, host_name) values ($1, $2) returning id";
+const UP_MASTER: &str = "update %SCHEMA%.rppd_config set master = true where id = $1";
 
 /// Rust Python Host
 ///
@@ -37,25 +40,21 @@ const SELECT: &str = "select id, host, alias, active_since, master from %SCHEMA%
 pub struct RpHost {
   pub(crate) id: i32,
   pub(crate) host: String,
-  pub(crate) alias: String,
-  pub(crate) active_since: chrono::DateTime<chrono::Utc>,
-  pub(crate) master: Option<bool>
+  pub(crate) host_name: String,
+  pub(crate) active_since:  Option<chrono::DateTime<chrono::Utc>>,
+  pub(crate) master: Option<bool>,
+  pub(crate) max_db_connections: i32,
 }
 
 impl RpHost {
-  pub(crate) fn select(schema:&String) -> String {
-    SELECT.replace("%SCHEMA%", schema.as_str())
+  pub(crate) fn select(schema: &String, condition: &str) -> String {
+    format!("{} {}", SELECT.replace("%SCHEMA%", schema.as_str()), condition)
   }
 
   pub(crate) async fn connect(&self) -> Result<Mutex<GrpcClient<Channel>>, String> {
     unimplemented!();
 
     Err("na".into())
-  }
-
-  /// try to self register as master if needed, return node_id
-  pub(crate) async fn insert(master: bool, c: &ArgConfig, pool: Pool<Postgres>) -> i32 {
-    unimplemented!();
   }
 
 }
@@ -66,7 +65,14 @@ impl RpHost {
 /// ".{column_name}": queue per value of the column in this table; => schema.table.column
 /// "{any_name}": global queue'; => ..name
 
-pub(crate) type Topic = String;
+pub(crate) type TopicType = String;
+
+
+/// String of schema.table
+pub(crate) type SchemaTableType = String;
+
+/// String of host:port
+pub(crate) type HostType = String;
 
 
 #[derive(Clone)]
@@ -89,7 +95,7 @@ pub(crate) struct Cluster {
 
   /// connections to nodes, mostly use by master
   /// host to node_id
-  node_ids: Arc<RwLock<HashMap<String, i32>>>,
+  node_ids: Arc<RwLock<HashMap<HostType, i32>>>,
 
   /// common queue to trigger bg dispatcher
   sender: Sender<RpFnLog>,
@@ -100,23 +106,162 @@ pub(crate) struct Cluster {
   /// internal fn topics and queues
   fns: Arc<RwLock<BTreeMap<i32, RpFnCtx>>>,
 
-  // TODO: multiple topics to single function copy
-  // topics_value: Arc<RwLock<BTreeMap<Topic, i32>>>,
-
   /// tablename -> topic
-  fn_tt: Arc<RwLock<HashMap<String, Topic>>>,
+  pub(crate) fn_tt: Arc<RwLock<HashMap<SchemaTableType, HashSet<TopicType>>>>,
 
   /// topic -> function id
-  fn_id: Arc<RwLock<HashMap<Topic, i32>>>,
+  pub(crate) fn_id: Arc<RwLock<HashMap<TopicType, BTreeSet<i32>>>>,
 
-  // Python connection pool to postgres and python context to run by functions topic
-  // trigger -> tablename -> function def -> _topic_ -> function call
-  // pys: Arc<RwLock<BTreeMap<i32, PyFnCtx>>>,
+  /// todo will dispose when unused
+  /// max is max_concurrent
+  pub(crate) exec: Arc<RwLock<VecDeque<Mutex<PyContext>>>>,
+  
+  pub(crate) cron: Arc<RwLock<Vec<RpFnCron>>>,
+}
+#[inline]
+fn make_sql_cnd(input: &Vec<PkColumn>) -> String {
+  let mut sql = String::new();
+  for idx in 0..input.len() {
+    if idx > 0 { sql.push_str(" and "); }
+    sql.push_str(format!("{} = ${}", input[idx].column_name, idx).as_str());
+  }
+  sql
 }
 
 impl Cluster {
   pub(crate) fn db(&self) -> Pool<Postgres> {
     self.db.clone()
+  }
+
+
+  #[inline]
+  async fn reload_hosts(&self, x: &EventRequest) -> Result<(), String> {
+    let id = self.node_id.load(Ordering::Relaxed);
+    let sql = RpHost::select(&self.cfg.schema, "active_since is not null");
+    let sql = if x.pks.len() == 0 { sql } else { format!("{} and {}", sql, make_sql_cnd(&x.pks))};
+    let mut r = sqlx::query_as::<_, RpHost>(sql.as_str());
+    // PK ID set for Hosts is redundant, because config table has only one int PK, but use of common struct dictate to perform this way
+    for x in &x.pks {
+      if let Some(x) = &x.pk_value {
+        match x {
+          IntValue(x) => { r = r.bind(*x); }
+          BigintValue(x) => { r = r.bind(*x); }
+        }
+      }
+    }
+
+    let rs = r.fetch_all(&self.db()).await
+        .map_err(|e| e.to_string())?;
+    let mut loaded = BTreeSet::new();
+    for n in rs {
+      loaded.insert(n.id);
+      if n.id == id { // this host
+        // self.cfg.bind
+
+      } else {
+        if n.active_since.is_none() { // remove?
+          //
+        }
+        let mut nodes = self.nodes.write().await;
+        match nodes.get(&n.id) {
+          None => {
+              self.node_connections.write().await.insert(n.id.clone(), n.connect().await);
+              self.nodes.write().await.insert(n.id.clone(), n);
+          }
+          Some(nx) => { // check if node changed
+            if nx.host != n.host {
+              if let Some(nx) = self.node_connections.write().await.insert(n.id.clone(), n.connect().await) {
+                if let Ok(nx) = nx {
+                  // nx.lock().close()
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    self.nodes.write().await.retain(|k, _v| loaded.contains(k));
+    self.node_connections.write().await.retain(|k, _v| loaded.contains(k));
+
+    Ok(())
+  }
+
+  /// load all or reload one or remove one function, include load/remove fs_logs
+  #[inline]
+  async fn reload_fs(&self, x: &Option<EventRequest>) -> Result<(), String>{
+    let sql = SELECT_FN.replace("%SCHEMA%", self.cfg.schema.as_str());
+    let sql =  if x.is_none() || x.as_ref().unwrap().pks.len() == 0 { sql } else {
+      format!("{} where {}", sql, make_sql_cnd(&x.as_ref().unwrap().pks))
+    };
+    let mut r = sqlx::query_as::<_, RpFn>(sql.as_str());
+
+    if let Some(x) = &x {
+      for column in &x.pks {
+        if let Some(pk) = &column.pk_value {
+          match pk {
+            IntValue(x) => { r = r.bind(*x); }
+            BigintValue(x) => { r = r.bind(*x); }
+          }
+        }
+      }
+    }
+
+    let r = r.fetch_all(&self.db()).await
+        .map_err(|e| e.to_string())?;
+    let mut loaded = BTreeSet::new();
+    for f in r {
+      loaded.insert(f.id);
+      let mut map = self.fns.write().await;
+      match map.get_mut(&f.id) {
+        None => {
+          let mut fmap = self.fn_tt.write().await;
+          match fmap.get_mut(&f.schema_table) {
+            None => {
+              let mut submap = HashSet::new();
+              submap.insert(f.topic.clone());
+              fmap.insert(f.schema_table.clone(), submap);
+            }
+            Some(submap) => {
+              submap.insert(f.topic.clone());
+            }
+          }
+          //
+          let mut fmap = self.fn_id.write().await;
+          match fmap.get_mut(&f.topic) {
+            None => {
+              let mut submap = BTreeSet::new();
+              submap.insert(f.id.clone());
+              fmap.insert(f.topic.clone(), submap);
+            }
+            Some(submap) => {
+              submap.insert(f.id.clone());
+            }
+          }
+              // .insert(f.topic.clone(), f.id.clone())
+          map.insert(f.id.clone(), RpFnCtx{ fns: f, topics: Default::default() });
+        }
+        Some(fx) => {
+          fx.fns.merge(f, &self);
+        }
+      }
+
+
+    }
+    self.fns.write().await.retain(|k, _v| loaded.contains(k));
+
+    Ok(())
+  }
+
+  /// load all or reload one or remove one schedules
+  #[inline]
+  async fn reload_crons(&self, x: &Option<EventRequest>) -> Result<(), String> {
+    let mut cl = sqlx::query_as::<_, RpFnCron>(SELECT_CRON.replace("%SCHEMA%", self.cfg.schema.as_str()).as_str())
+        .fetch_all(&self.db()).await.map_err(|e| e.to_string())?;
+    let mut crons = self.cron.write().await;
+    crons.clear();
+    crons.append(&mut cl);
+    Ok(())
   }
 
   /// init
@@ -130,8 +275,7 @@ impl Cluster {
     let mut node_connections = BTreeMap::new();
     let mut node_id = HashMap::new();
 
-    let this = format!("{}:{}", c.bind, c.port);
-    let r = sqlx::query_as::<_, RpHost>(RpHost::select(&c.schema).as_str())
+    let r = sqlx::query_as::<_, RpHost>(RpHost::select(&c.schema, "active_since is not null").as_str())
         .fetch_all(&pool).await
         .map_err(|e| e.to_string())?;
     let mut master = false; // master is present and up
@@ -139,7 +283,7 @@ impl Cluster {
     let r_len = r.len();
     let mut id = 0;
     for n in r {
-      if n.host == this {
+      if n.host == c.this {
         found_self = true;
         id = n.id;
       } else {
@@ -168,49 +312,29 @@ impl Cluster {
       fn_tt: Arc::new(Default::default()),
       fn_id: Arc::new(Default::default()),
       // pys: Arc::new(Default::default()),
+      exec: Arc::new(Default::default()),
+      cron: Arc::new(Default::default()),
     };
 
-    cluster.run(rsvr, r_len == 0 || !master  || !found_self, !master).await;
+    cluster.run(rsvr, r_len == 0 || !found_self, !master).await;
 
     Ok(cluster)
   }
 
   /// prepare to run code on startup and background
   async fn run(&self, mut rsvr: Receiver<RpFnLog>, self_register: bool, self_master: bool) {
-    let master = self.master.clone();
-    let started = self.started.clone();
-    let c = self.cfg.clone();
-    let pool = self.db();
     let ctx = self.clone();
-    // let ctx = RpFnBgCtx {
-    //   fns: self.fns.clone(),
-    //   pys: self.pys.clone(),
-    //   db: self.db(),
-    // };
 
     tokio::spawn(async move { // will execute as background, but will try to connect to this host
-      RpHost::insert(self_master, &c, pool).await;
-
-      if self_master {
-        master.store(true, Ordering::Relaxed);
+      if let Err(e) = ctx.start_bg(self_register, self_master).await {
+        eprintln!("{}", e);
+        std::process::exit(10);
       }
-      // load functions
-      let _ = ctx.load().await;
-      // load messages to internal queue from fn_log, check timeout and execution status,
 
-      // set STARTED
-      started.store(true, Ordering::Relaxed);
       loop {
         match rsvr.recv().await {
-          None => {
-            break
-          },
-          Some(ci) => {
-            if let Err(e) = ctx.execute(ci).await {
-              // todo store log if present
-              eprintln!("{}", e);
-            }
-          }
+          None => { break },
+          Some(ci) => ctx.execute(ci).await
         }
       }
 
@@ -225,83 +349,149 @@ impl Cluster {
 
   /// find topic, fnb_id and node_id by table
   /// synchroniously on client DB transaction store log, if configured
-  async fn schedule(&self, r: &EventRequest) -> Result<ScheduleResult, String> {
-    let f_id = match self.fn_tt.read().await.get(&r.table_name) {
-      None => {return Ok(ScheduleResult::None);}
-      Some(topic) => {
-        match self.fn_id.read().await.get(topic) {
-          None => {return Ok(ScheduleResult::None);}
-          Some(t) => *t
+  async fn prepare(&self, r: &EventRequest) -> Result<ScheduleResult, String> {
+    let mut fn_ids: BTreeSet<i32> = BTreeSet::new();
+    if let Some(topics) = self.fn_tt.read().await.get(&r.table_name) {
+        for topic in topics {
+          if let Some(t) = self.fn_id.read().await.get(topic) {
+            fn_ids.append(&mut t.clone());
+          }
         }
-      }
     };
-    let (fl,recovery_logs, is_dot) =  match self.fns.read().await.get(&f_id) {
-      None => {
-        return Ok(ScheduleResult::None);
-      },
-      Some(f) => {
-        if !r.id_value && r.pk_value.is_none() &&f.fns.is_dot() {
-          return Ok(f.fns.to_repeat_result());
+    if fn_ids.len() == 0 {
+      return Ok(ScheduleResult::None);
+    }
+
+    let mut pkk = vec![];
+    let mut logs = vec![];
+
+    let map = self.fns.read().await;
+    for fn_id in &fn_ids {
+      if let Some(f) = map.get(fn_id) {
+        if !r.id_value && f.fns.is_dot() {
+          pkk.push(f.fns.to_repeat_result());
         }
-
-        (RpFnLog {
-          id: 0,
-          node_id: 0, // TODO this host or another node
-          fn_id: f.fns.id,
-          took_sec: 0,
-          trig_type: r.event_type,
-          trig_value: r.pk_value.as_ref().map(|e| match e {
-            PkValue::IntValue(v) => *v as i64,
-            PkValue::BigintValue(v) => *v,
-          }) ,
-          finished_at: None,
-          output_msg: None,
-          error_msg: None,
-         }, f.fns.recovery_logs, f.fns.is_dot()
-        )}
-      };
-
-      if !recovery_logs {
-         return Ok(ScheduleResult::Some(fl));
+        if pkk.len() == 0 {
+          for p in &r.pks {
+            if let Some(pk) = &p.pk_value {
+              //
+            }
+          }
+          logs.push((RpFnLog {
+            id: 0,
+            node_id: 0, // TODO this host or another node
+            fn_id: f.fns.id,
+            took_sec: 0,
+            trig_type: r.event_type,
+            trig_value: Default::default(), // TODO FIXME NOW set value
+            /*
+            r.pk_value.as_ref().map(|e| match e {
+              IntValue(v) => v as i64,
+              BigintValue(v) => v,
+            }),
+             */
+            finished_at: None,
+            error_msg: None,
+          }, f.fns.cleanup_logs_min, f.fns.is_dot())
+          );
+        }
       }
-      let r = if is_dot {
-        sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&self.cfg.schema).as_str())
-            .bind(fl.node_id)
-            .bind(fl.fn_id)
-            .bind(fl.trig_value.unwrap_or(0))
-            .bind(fl.trig_type)
-            .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
-      } else {
-        sqlx::query_scalar::<_, i64>(RpFnLog::insert(&self.cfg.schema).as_str())
-            .bind(fl.node_id)
-            .bind(fl.fn_id)
-            .bind(fl.trig_type)
-            .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
-      };
+    }
+    if pkk.len() > 0 {
+       return Ok(ScheduleResult::Repeat(pkk));
+    }
 
-    Ok(ScheduleResult::Some(RpFnLog{id: r, ..fl}))
+    let mut res = Vec::with_capacity(logs.len());
+    for (fl, cleanup_logs_min, is_dot) in logs {
+      if cleanup_logs_min > 0 {
+        let r = if is_dot {
+          sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&self.cfg.schema).as_str())
+              .bind(fl.node_id)
+              .bind(fl.fn_id)
+              // .bind(fl.trig_value.clone()) // TODO no value set yet
+              .bind(fl.trig_type)
+              .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
+        } else {
+          sqlx::query_scalar::<_, i64>(RpFnLog::insert(&self.cfg.schema).as_str())
+              .bind(fl.node_id)
+              .bind(fl.fn_id)
+              .bind(fl.trig_type)
+              .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
+        };
+        res.push(RpFnLog {id: r, ..fl});
+      } else {
+        res.push(fl);
+      };
+    }
+    Ok(ScheduleResult::Some(res))
   }
 
 
-  pub(crate) async fn load(&self) -> Result<(), String> {
+  /// try to self register as master if needed, return node_id
+  async fn start_bg(&self, insert: bool, master: bool) -> Result<(), String> {
+    let pool = self.db();
+    if insert {
+      let sql = INSERT_HOST.replace("%SCHEMA%", &self.cfg.schema.as_str());
+      let id = sqlx::query_scalar::<_, i32>(sql.as_str())
+              .bind(&self.cfg.bind)
+              .bind(&self.cfg.this)
+              .fetch_one(&self.db()).await.map_err(|e| e.to_string())?;
 
+      self.node_id.store(id, Ordering::Relaxed);
+    }
+    let id = self.node_id.load(Ordering::Relaxed);
+
+    let sql = UP_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
+    if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
+      eprintln!("{}", e);
+    }
+
+    let sql = "select master from %SCHEMA%.rppd_config where id = $1".replace("%SCHEMA%", &self.cfg.schema.as_str());
+
+    let master = sqlx::query_scalar::<_, bool>(sql.as_str())
+        .bind(id)
+        .fetch_one(&pool).await
+        .map_err(|e| e.to_string())?;
+    if master {
+      self.master.store(true, Ordering::Relaxed);
+    }
+
+    let sql = RpHost::select(&self.cfg.schema, "id = $1");
+
+    // load functions
+    let _ = self.reload_fs(&None).await?;
+
+    // load messages to internal queue from fn_log, check timeout and execution status,
+    for l in sqlx::query_as::<_, RpFnLog>(RpFnLog::select(&self.cfg.schema).as_str())
+        .fetch_all(&self.db()).await.map_err(|e| e.to_string())? {
+      let _ = self.sender.send(l).await.map_err(|e| e.to_string())?;
+    }
+
+    let _ = self.reload_crons(&None).await?;
+
+    // set STARTED
+    self.started.store(true, Ordering::Relaxed);
     Ok(())
   }
 
 
   /// primary loop of event execution
-  pub(crate) async fn execute(&self, f: RpFnLog) -> Result<(), String> {
-
+  async fn execute(&self, f: RpFnLog) {
     match self.fns.read().await.get(&f.fn_id) {
-      None => Err(format!("no function by id: {}", f.fn_id)),
+      None => {
+        eprintln!("no function by id: {}", f.fn_id);
+      },
       Some(fc) => {
-        // TODO store to reuse
-        let p = PyContext::new(&fc.fns, &self.cfg.db_url()).map_err(|e| e.to_string())?;
+        let started = Instant::now();
 
-        p.invoke(&f, fc)
+        // TODO store PyContext to reuse
+        let r = PyContext::new(&fc.fns, &self.cfg.db_url())
+            .map(|p| p.invoke(&f, fc))
+            .map_err(|e| e.to_string());
+
+          f.update(started.elapsed().as_secs(), self.db(), &self.cfg.schema).await;
       }
     }
-
   }
 }
 
@@ -310,9 +500,9 @@ pub(crate) enum ScheduleResult {
   // no need schedule
   None,
   // Ok
-  Some(RpFnLog),
+  Some(Vec<RpFnLog>),
   // repeat a call with column name
-  Repeat(PkColumn)
+  Repeat(Vec<PkColumn>)
 }
 
 #[async_trait]
@@ -322,30 +512,32 @@ impl Grpc for Cluster {
   async fn event(&self, request: Request<EventRequest>) -> Result<Response<EventResponse>, Status> {
     let request = request.into_inner();
     if request.optional_caller.is_some() && self.master.load(Ordering::Relaxed) {
-      return Ok(Response::new(EventResponse{ event_response: None })); // no reverse call from host to master
+      return Ok(Response::new(EventResponse{ saved: false, repeat_with: vec![] })); // no reverse call from host to master
     }
 
     if !self.started.load(Ordering::Relaxed) {
       // not started
       return if request.table_name.starts_with(&self.cfg.schema)
       && request.table_name.ends_with(CFG_FN_TABLE) {
-        Ok(Response::new(EventResponse { event_response: Some(event_response::EventResponse::Saved(true)) })) // init stage to set master
+        Ok(Response::new(EventResponse { saved: true, repeat_with: vec![] })) // init stage to set master
       } else {
         if request.optional_caller.is_some() {
-          Ok(Response::new(EventResponse { event_response: None })) // tell master, node is not ready
+          Ok(Response::new(EventResponse { saved: false, repeat_with: vec![] })) // tell master, node is not ready
         } else {
           Err(Status::internal("not a master"))
         }
       };
     }
 
-    match self.schedule(&request).await.map_err(|e| Status::internal(e))? {
+    match self.prepare(&request).await.map_err(|e| Status::internal(e))? {
       ScheduleResult::None => {}
-      ScheduleResult::Some(fn_log) => {
-        let _ = self.sender.send(fn_log).await;
+      ScheduleResult::Some(fn_logs) => {
+        for fn_log in fn_logs {
+          let _ = self.sender.send(fn_log).await;
+        }
       }
-      ScheduleResult::Repeat(pk) => {
-        return Ok(Response::new(EventResponse{ event_response: Some(RepeatWith(pk)) }));
+      ScheduleResult::Repeat(repeat_with) => {
+        return Ok(Response::new(EventResponse{ saved: false, repeat_with }));
       }
     }
 
@@ -353,22 +545,22 @@ impl Grpc for Cluster {
       if request.optional_caller.is_none() {
         // TODO broadcast to cluster, set optional_caller to this as master
       }
-      if request.table_name.ends_with(CFG_TABLE) {
-        // TODO register a node or self register, includes set as master
 
+      if let Err(e) = if request.table_name.ends_with(CFG_TABLE) {
+        self.reload_hosts(&request).await
       } else if request.table_name.ends_with(CFG_FN_TABLE) {
-        // TODO update functions
-
-      } else if request.table_name.ends_with(CFG_QUEUE_TABLE) {
-        // TODO update queues
-
-      } else if request.table_name.ends_with(CFG_FNL_TABLE) {
+        self.reload_fs(&Some(request)).await
+      } else if request.table_name.ends_with(CFG_CRON_TABLE) {
+        self.reload_crons(&Some(request)).await
+      } else { // if request.table_name.ends_with(CFG_FNL_TABLE) {
         // no trigger should be there
-
+        Ok(())
+      } {
+        return Err(Status::internal(e));
       }
     }
 
-    Ok(Response::new(EventResponse{ event_response: Some(event_response::EventResponse::Saved(true))  }))
+    Ok(Response::new(EventResponse{ saved: true,  repeat_with: vec![] }))
   }
 
   async fn status(&self, request: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {

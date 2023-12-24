@@ -19,7 +19,7 @@ pub const DEFAULT_SCHEMA: &str = "rppd.";
 pub const CFG_TABLE: &str = "rppd_config";
 pub const CFG_FN_TABLE: &str = "rppd_function";
 pub const CFG_FNL_TABLE: &str = "rppd_function_log";
-pub const CFG_QUEUE_TABLE: &str = "rppd_queue";
+pub const CFG_CRON_TABLE: &str = "rppd_cron";
 
 pub const SCHEMA: &str = "schema";
 pub const URL: &str = "url";
@@ -74,6 +74,7 @@ impl ClusterConfigNames {
 pub struct ArgConfig {
     /// обычно первый аргумент, урл-сокет коннекта к постгресу
     /// может быть копия db_url из cfg, или default
+    pub this: String,
     pub db_url: String,
     pub user: String,
     pub pwd: String,
@@ -84,6 +85,7 @@ pub struct ArgConfig {
     pub port: u16,
     /// MAX_QUEUE_SIZE
     pub max_queue_size: usize,
+    pub force_master: bool,
 }
 
 impl Default for ArgConfig {
@@ -99,8 +101,13 @@ impl Default for ArgConfig {
             Some(a) => a.to_str().unwrap_or("").to_string(),
             _ => "".to_string(),
         };
+		let this = match std::env::var_os("HOSTNAME") {
+            Some(a) => a.to_str().unwrap_or("localhost").to_string(),
+            _ => "localhost".to_string(),
+        };
 
 	    ArgConfig {
+            this,
             db_url: DEFAULT_DB_URL.replace("$USER", user.as_str()),
             user,
             pwd,
@@ -109,6 +116,7 @@ impl Default for ArgConfig {
             bind: "localhost".to_string(),
             port: 8881,
             max_queue_size: ArgConfig::max_queue_size(),
+            force_master: false,
         }
 	}
 }
@@ -152,8 +160,10 @@ impl ArgConfig {
         let mut pwd = "".to_string();
         let file = if file_idx > 0 { Some((&input[file_idx]).to_string()) } else { None };
         let mut schema = "public.".to_string();
+        let mut this = env::var_os("HOSTNAME").map(|v| v.to_str().unwrap_or("").to_string()).unwrap_or("".to_string());;
         let mut bind = "localhost".to_string();
         let mut port = 8881;
+        let mut force_master = false;
 
         for i in 1..input.len() {
             if i != file_idx {
@@ -163,6 +173,11 @@ impl ArgConfig {
                     pwd = v;
                 } else if let Some(v) = ArgConfig::try_parse_cfg(&input[i], &cfg, "postgresql://", URL) {
                     db_url = v;
+                } else if input[i].starts_with("--force_master=") {
+                    force_master = input[i].ends_with("=true") || input[i].ends_with("=yes");
+                } else if input[i].starts_with("--name=") {
+                    let v:Vec<&str> = input[i].split("=").collect();
+                    if v.len()>1 { this = v[1].to_string(); }
                 } else if let Some(v) = ArgConfig::try_parse_cfg(&input[i], &cfg, ":", BIND) {
                     let b: Vec<&str> = v.split(":").collect();
                     bind = b[0].to_string();
@@ -182,7 +197,7 @@ impl ArgConfig {
             }
         }
 
-        Ok(ArgConfig { db_url, user, pwd, file, schema, bind, port, max_queue_size: ArgConfig::max_queue_size() })
+        Ok(ArgConfig { this, db_url, user, pwd, file, schema, bind, port, max_queue_size: ArgConfig::max_queue_size(), force_master })
     }
 
     #[inline]
@@ -329,6 +344,15 @@ mod tests {
         assert!(ArgConfig::new(vec![]).is_ok())
     }
 
+
+    #[test]
+    fn config_args_5_test() {
+        let cfg = ["test".to_string(), "--force_master=true".to_string(), "postgresql://db".to_string(), "c".to_string()].to_vec();
+        let cfg = ArgConfig::new(cfg).unwrap();
+        assert_eq!(cfg.db_url.as_str(), "postgresql://db");
+        assert_eq!(cfg.schema.as_str(), "c");
+        assert!(cfg.force_master);
+    }
 
     #[test]
     fn config_args_parsing_test() {

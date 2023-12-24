@@ -42,7 +42,7 @@ Then (this takes time)
 - All nodes tried to register on master and participate in.
 - Function trigger on a target table and possible column named id
 - The execution code is a python function. 
-- The action also available by schedule to implement a queue.
+- The action also available by schedule to implement a cron.
 - All configuration store in db table created by extension creation.
 - If main service shutting down of unavailable than one ot service become a master. 
 - No election, but whoever first will be able to safe and undoubted update configuration table. 
@@ -60,6 +60,15 @@ Then (this takes time)
 
 
 ## Python samples
+
+### variables - kwargs
+
+> DB - database connection
+> TOPIC - fc.fns.topic
+> TABLE - fc.fns.schema_table
+> PK - ID or trig_value
+> TRIG - UPDATE = 0;  INSERT = 1;  DELETE = 2;  TRUNCATE = 3;
+
 
 ### test code:
 

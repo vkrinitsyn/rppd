@@ -12,21 +12,22 @@ enum DbAction {
 }
 
 message EventRequest {
-	// schema.table
+	// The name includes schema, i.e.: schema.table
 	string table_name = 1;
 	DbAction event_type = 2;
+
 	// if false, then pk_value took by previous call of EventResponse.column_name
 	// this is implemented to avoid complex solution for a topic names
 	bool id_value = 3;
+
 	// rppd_config.id of caller host or None if called by trigger
 	oneof optional_caller {
 			int32 call_by = 4;
 	}
-	// to do: add column type and return values of different types
-	oneof pk_value {
-		int32 int_value = 5;
-		int64 bigint_value = 6;
-	}
+
+	// return on second call with this values
+	// the function might pass non PK values OR combined PK
+	repeated PkColumn pks = 5;
 }
 
 enum PkColumnType {
@@ -39,16 +40,17 @@ message PkColumn {
   string column_name = 1;
 	// default Int
 	PkColumnType column_type = 2;
+	// see PkColumnType
+	oneof pk_value {
+		int32 int_value = 5;
+		int64 bigint_value = 6;
+	}
 }
 
 message EventResponse {
-	// return None, if nothing else required - not configured, nor operatable
-	oneof event_response {
-		bool saved = 1;
-		// needs to call again with column name data
-	  PkColumn repeat_with = 2;
-	}
-
+	bool saved = 1;
+	// needs to call again with column name data
+	repeated PkColumn repeat_with = 2;
 }
 
 enum FnAction {
@@ -84,7 +86,7 @@ message StatusResponse {
 
 //The GRPC service
 service Grpc {
-  // call by trigger
+  // call by trigger or by master
 	rpc event(EventRequest) returns (EventResponse) {}
 
   // call between nodes
