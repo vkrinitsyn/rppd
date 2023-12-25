@@ -19,3 +19,5 @@ psql -c "create extension rppd"
 psql -c "\d rppd_config"
 
 #cargo build --bin rppd --release -F pg$v
+
+echo "Release build. use target/release/rppd to run"

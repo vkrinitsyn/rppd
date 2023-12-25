@@ -1,12 +1,20 @@
 # RPPD - Rust Python Postgres Discovery
 
 ## Build
+> [!IMPORTANT]
+The target platform is Linux! The key component is pxrg, a rust postgres trigger engine that does not support windows.
 
-target platform: Linux, pxrg, as rust postgres trigger engine does not support windows.
+> [!NOTE]
 https://grpc.io/docs/protoc-installation/
 
-### Trigger build
 
+### Build
+```shell
+./make.sh
+```
+
+### Trigger build
+```shell
 cargo install cargo-pgrx
 cargo pgrx init
 
@@ -18,12 +26,13 @@ echo ${v:11:2}
 sudo cp target/release/rppd-pg14/usr/share/postgresql/14/extension/rppd* /usr/share/postgresql/14/extension/
 sudo cp target/release/rppd-pg14/usr/lib/postgresql/14/lib/rppd.so /usr/lib/postgresql/14/lib
 psql -c "create extension rppd" 
-
+```
 
 ### Server build
-
+```shell
 cargo install sqlx-cli
 cargo sqlx prepare
+```
 
 ### FAQ
 
@@ -31,21 +40,23 @@ IF
 > Mismatched rust versions: cargo-pgrx Mismatched rust versions: cargo-pgrx
 
 Then (this takes time)
-> cargo install cargo-pgrx
-> cargo pgrx init 
-
+```shell
+cargo install cargo-pgrx
+cargo pgrx init 
+```
 
 ## Overall architecture
 
-- Postgres extension with a trigger to notify service about a insert or update event.
-- The service is a one to many instances with first act as master and forward event execution to the actor nodes or execute.
-- All nodes tried to register on master and participate in.
-- Function trigger on a target table and possible column named id
-- The execution code is a python function. 
-- The action also available by schedule to implement a cron.
-- All configuration store in db table created by extension creation.
+- Postgres extension with a trigger to notify backend service about a insert or update or delete event.
+- The service is a one to many instances with first act as master and run or forward event execution to the actor nodes.
+- All nodes tried to register on master and participate in performance.
+- Function trigger created on a target table and relay on topic/queue definition. This might be a column to pass a row id into function.
+- The executed code is a python function. 
+- The action also available by schedule to implement a cron job.
+- All configuration store in db table created by extension.
 - If main service shutting down of unavailable than one ot service become a master. 
-- No election, but whoever first will be able to safe and undoubted update configuration table. 
+- No cluster leader election, but whoever be able to safe and undoubted updated self as master on configuration table. 
+
 
 ## Usage
 
@@ -63,37 +74,61 @@ Then (this takes time)
 
 ### variables - kwargs
 
-> DB - database connection
-> TOPIC - fc.fns.topic
-> TABLE - fc.fns.schema_table
-> PK - ID or trig_value
-> TRIG - UPDATE = 0;  INSERT = 1;  DELETE = 2;  TRUNCATE = 3;
+```python 
+DB -- database connection
+TOPIC -- fc.fns.topic
+TABLE -- fc.fns.schema_table
+TRIG -- UPDATE = 0;  INSERT = 1;  DELETE = 2;  TRUNCATE = 3;
+"COLUMN_NAME" --i.e. "ID" = see trig_value (up to 3)
+```
 
+### python example:
+```python
 
-### test code:
+sql = "SELECT * FROM {} where a = %s".format(TABLE)
+print(sql)
 
-> sql = "SELECT * FROM {} where a = %s".format(TABLE)
-> print(sql)
->
-> cur = DB.cursor()
-> cur.execute(sql, (PK))
-> print(cur.fetchall())
->
-> cur.execute("insert into test (b) values (%s)", ( "{}-{}".format(TOPIC, TRIG),))
-> DB.commit()
+cur = DB.cursor()
+cur.execute(sql, (PK))
+print(cur.fetchall())
 
+cur.execute("insert into test (b) values (%s)", ( "{}-{}".format(TOPIC, TRIG),))
+DB.commit()
+```
 
-### test code2
-> cur = DB.cursor()
-> cur.execute("SELECT * FROM {} ".format(TABLE))
-> print(cur.fetchall())
+### python example2
+```python
+cur = DB.cursor()
+cur.execute("SELECT * FROM {} ".format(TABLE))
+print(cur.fetchall())
+```
 
+### test example:
+```sql
+create table if not exists test_source (id serial primary key, input text);
+create table if not exists test_sink (id serial primary key, data text);
+\set code `cat test_fn.py`
+insert into rppd_function (code, checksum, schema_table, topic) values (:code, 'na', 'public.test_source', '.id');
+insert into rppd_source (input) values ('test input');
+```
+
+### python test example
+for the test above
+```python
+cur = DB.cursor()
+cur.execute("SELECT input FROM test_source where id = %s", ([PK]))
+input = cur.fetchall()
+if len(input) > 0:
+    cur.execute("insert into test_sink (data) values (%s)", ( input[0] ))
+    DB.commit()
+```
 
 
 ## TODO
+> [!NOTE]
 
 ### Core features and improvements 
-- Python function DB connection to secondary pool i.e. follower DB for handle heavy readonly load
+- Python function DB connection pool
 - Python function code sign, approve and verify on call
 - Monitoring cadence and hardware with email notification
 

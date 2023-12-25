@@ -27,6 +27,7 @@ pub const BIND: &str = "bind";
 pub const DEFAULT_BIND: &str = "localhost:8881";
 
 pub const MAX_QUEUE_SIZE: usize = 1000;
+pub const DEFAULT_PORT: u16 = 8881;
 
 
 ///  - a text file in any format OR a dir with a file: rppd.rppd_config names are: 'schema', 'url', 'bind'
@@ -112,9 +113,9 @@ impl Default for ArgConfig {
             user,
             pwd,
             file: None,
-            schema: "public.".to_string(),
+            schema: "public".to_string(),
             bind: "localhost".to_string(),
-            port: 8881,
+            port: DEFAULT_PORT,
             max_queue_size: ArgConfig::max_queue_size(),
             force_master: false,
         }
@@ -159,10 +160,10 @@ impl ArgConfig {
         let mut db_url = DEFAULT_DB_URL.replace("$USER", user.as_str());
         let mut pwd = "".to_string();
         let file = if file_idx > 0 { Some((&input[file_idx]).to_string()) } else { None };
-        let mut schema = "public.".to_string();
+        let mut schema = "public".to_string();
         let mut this = env::var_os("HOSTNAME").map(|v| v.to_str().unwrap_or("").to_string()).unwrap_or("".to_string());;
         let mut bind = "localhost".to_string();
-        let mut port = 8881;
+        let mut port = DEFAULT_PORT;
         let mut force_master = false;
 
         for i in 1..input.len() {
@@ -363,6 +364,14 @@ mod tests {
             ArgConfig::parse_table_name(&"".to_string(), &".t".to_string()));
         assert_eq!(format!("{}.t", DEFAULT_SCHEMA),
             ArgConfig::parse_table_name(&"".to_string(), &"t".to_string()));
+    }
+
+    #[test]
+    fn dns_test() {
+        let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host("localhost").unwrap();
+        assert!(ips.len() > 0);
+        let ipsd: Vec<std::net::IpAddr> = dns_lookup::lookup_host("127.0.0.1").unwrap();
+        assert_eq!(ipsd.len(), 1);
     }
 
 }

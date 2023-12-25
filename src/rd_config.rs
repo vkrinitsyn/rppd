@@ -30,8 +30,8 @@ use crate::gen::rg::pk_column::PkValue;
 use crate::gen::rg::pk_column::PkValue::{BigintValue, IntValue};
 use crate::rd_fn::*;
 
-const SELECT: &str = "select id, host, host_name, active_since, master, max_db_connections from %SCHEMA%.rppd_config where ()";
-const INSERT_HOST: &str = "insert into %SCHEMA%.rppd_config (host, host_name) values ($1, $2) returning id";
+const SELECT: &str = "select id, host, host_name, active_since, master, max_db_connections from %SCHEMA%.rppd_config where ";
+const INSERT_HOST: &str = "insert into %SCHEMA%.rppd_config (host, host_name, master) values ($1, $2, $3) returning id";
 const UP_MASTER: &str = "update %SCHEMA%.rppd_config set master = true where id = $1";
 
 /// Rust Python Host
@@ -52,6 +52,7 @@ impl RpHost {
   }
 
   pub(crate) async fn connect(&self) -> Result<Mutex<GrpcClient<Channel>>, String> {
+    // TODO FIXME impl
     unimplemented!();
 
     Err("na".into())
@@ -269,7 +270,7 @@ impl Cluster {
     let pool = PgPoolOptions::new()
         .max_connections(1)  // use only on init
         .connect(c.db_url().as_str()).await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Connection error to: {}", c.db_url()))?;
     // getting cluster
     let mut nodes = BTreeMap::new();
     let mut node_connections = BTreeMap::new();
@@ -277,7 +278,7 @@ impl Cluster {
 
     let r = sqlx::query_as::<_, RpHost>(RpHost::select(&c.schema, "active_since is not null").as_str())
         .fetch_all(&pool).await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Loading cluster of active nodes: {}", e))?;
     let mut master = false; // master is present and up
     let mut found_self = false; // is self registered
     let r_len = r.len();
@@ -317,7 +318,7 @@ impl Cluster {
     };
 
     cluster.run(rsvr, r_len == 0 || !found_self, !master).await;
-
+    println!("Cluster instance created");
     Ok(cluster)
   }
 
@@ -327,8 +328,8 @@ impl Cluster {
 
     tokio::spawn(async move { // will execute as background, but will try to connect to this host
       if let Err(e) = ctx.start_bg(self_register, self_master).await {
-        eprintln!("{}", e);
-        std::process::exit(10);
+        eprintln!("Failed to start:{}", e);
+        std::process::exit(11);
       }
 
       loop {
@@ -430,20 +431,26 @@ impl Cluster {
   /// try to self register as master if needed, return node_id
   async fn start_bg(&self, insert: bool, master: bool) -> Result<(), String> {
     let pool = self.db();
+    let host = format!("{}:{}", self.cfg.bind, self.cfg.port);
     if insert {
+      println!("Self registering: {} {}", host, if master { "as master"} else {""});
       let sql = INSERT_HOST.replace("%SCHEMA%", &self.cfg.schema.as_str());
       let id = sqlx::query_scalar::<_, i32>(sql.as_str())
-              .bind(&self.cfg.bind)
-              .bind(&self.cfg.this)
-              .fetch_one(&self.db()).await.map_err(|e| e.to_string())?;
+          .bind(&host)
+          .bind(&self.cfg.this)
+          .bind(if master { Some(true) } else {None})
+          .fetch_one(&self.db()).await.map_err(|e| e.to_string())?;
 
       self.node_id.store(id, Ordering::Relaxed);
+      println!("Registered: {}", host);
     }
     let id = self.node_id.load(Ordering::Relaxed);
 
-    let sql = UP_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
-    if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
-      eprintln!("{}", e);
+    if !insert && master {
+      let sql = UP_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
+      if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
+        eprintln!("{}", e);
+      }
     }
 
     let sql = "select master from %SCHEMA%.rppd_config where id = $1".replace("%SCHEMA%", &self.cfg.schema.as_str());
@@ -487,7 +494,7 @@ impl Cluster {
         // TODO store PyContext to reuse
         let r = PyContext::new(&fc.fns, &self.cfg.db_url())
             .map(|p| p.invoke(&f, fc))
-            .map_err(|e| e.to_string());
+            .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url(), e));
 
           f.update(started.elapsed().as_secs(), self.db(), &self.cfg.schema).await;
       }
@@ -515,10 +522,13 @@ impl Grpc for Cluster {
       return Ok(Response::new(EventResponse{ saved: false, repeat_with: vec![] })); // no reverse call from host to master
     }
 
+    // println!(">>started:{}, cfgtable: {}: {}", self.started.load(Ordering::Relaxed),
+    //          request.table_name,
+    //          request.table_name.starts_with(&self.cfg.schema) && request.table_name.ends_with(CFG_TABLE));
+
     if !self.started.load(Ordering::Relaxed) {
       // not started
-      return if request.table_name.starts_with(&self.cfg.schema)
-      && request.table_name.ends_with(CFG_FN_TABLE) {
+      return if request.table_name.starts_with(&self.cfg.schema) && request.table_name.ends_with(CFG_TABLE) {
         Ok(Response::new(EventResponse { saved: true, repeat_with: vec![] })) // init stage to set master
       } else {
         if request.optional_caller.is_some() {

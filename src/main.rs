@@ -73,7 +73,12 @@ async fn main() -> Result<(), String> {
 	let input:Vec<String> = std::env::args_os().map(|e| e.to_string_lossy().to_string()).collect();
 	match arg_config::ArgConfig::new(input) {
 		Ok(c) => {
-			let adr = SocketAddr::new(IpAddr::from_str(c.bind.as_str()).unwrap(), c.port);
+			let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(c.bind.as_str()).expect(format!("Binding to {}", c.bind).as_str());
+			if ips.len() == 0 {
+				eprintln!("No IpAddr found {}", c.bind);
+				std::process::exit(9);
+			}
+			let adr = SocketAddr::new(ips[0], c.port);
 			let srv = Cluster::init(c).await?;
 
 			match Server::builder()

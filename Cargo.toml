@@ -55,6 +55,7 @@ unic-langid = "0.9"
 lazy_static = "1.4.0"
 log = "0.4.20"
 cron-parser = "0.8.1"
+dns-lookup = "2.0.4"
 
 [dev-dependencies]
 pgrx-tests = { version = "^0.11.2", features = ["pg14"]}

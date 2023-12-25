@@ -14,7 +14,7 @@ comment on table @extschema@.rppd_config is 'App nodes host binding, master host
 comment on column @extschema@.rppd_config.active_since is 'The NULL or future value indicate incative nodes';
 comment on column @extschema@.rppd_config.host_name is 'The readable name for a node host instance. use --name= to set on server start';
 comment on column @extschema@.rppd_config.host is 'The node address and port to connect';
-comment on column @extschema@.rppd_config.master is 'The node act a cluster coordinator';
+comment on column @extschema@.rppd_config.master is 'The node act a cluster coordinator. Used values: true or null';
 comment on column @extschema@.rppd_config.max_db_connections is 'Max connections database connections. To perform concurrent Python events execution on the topic make a queue = false';
 
 CREATE TRIGGER @extschema@_rppd_config_event AFTER INSERT OR UPDATE OR DELETE ON
