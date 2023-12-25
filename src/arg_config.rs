@@ -73,8 +73,6 @@ impl ClusterConfigNames {
 ///  - priority is: env, if no set, than param, than file, than default
 #[derive(Debug, Clone)]
 pub struct ArgConfig {
-    /// обычно первый аргумент, урл-сокет коннекта к постгресу
-    /// может быть копия db_url из cfg, или default
     pub this: String,
     pub db_url: String,
     pub user: String,
@@ -155,14 +153,14 @@ impl ArgConfig {
                 Err(e) => {}
             }
         }
-
-        let mut user = env::var_os("USER").map(|v| v.to_str().unwrap_or("postgres").to_string()).unwrap_or("postgres".to_string());
-        let mut db_url = DEFAULT_DB_URL.replace("$USER", user.as_str());
-        let mut pwd = "".to_string();
+        let def = ArgConfig::default();
+        let mut user = def.user.clone();
+        let mut db_url = def.db_url.clone();
+        let mut pwd = def.pwd.clone();
         let file = if file_idx > 0 { Some((&input[file_idx]).to_string()) } else { None };
-        let mut schema = "public".to_string();
-        let mut this = env::var_os("HOSTNAME").map(|v| v.to_str().unwrap_or("").to_string()).unwrap_or("".to_string());;
-        let mut bind = "localhost".to_string();
+        let mut schema = def.schema.clone();
+        let mut this = def.this.clone();
+        let mut bind = def.bind.clone();
         let mut port = DEFAULT_PORT;
         let mut force_master = false;
 

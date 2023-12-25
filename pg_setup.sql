@@ -5,7 +5,7 @@ CREATE table if not exists @extschema@.rppd_config (
     id serial primary key,
     host varchar(64) not null unique,
     host_name varchar(64) not null unique,
-    active_since timestamp default current_timestamp,
+    active_since timestamptz default current_timestamp,
     max_db_connections int not null default 10,
     master bool unique
 --  db pool/config name
@@ -29,7 +29,7 @@ CREATE table if not exists @extschema@.rppd_function (
     topic varchar(64) not null default '', -- ''
     queue bool not null default true,
     cleanup_logs_min int not null default 0
--- TODO: sign, approve, cadence, env pass
+-- TODO wishes: sign, approve, cadence, env pass
 );
 
 comment on table @extschema@.rppd_function is 'Python function code, linked table and topic. If modify, than the cache will be refreshed. Functions triggered for same topic OR table i.e. many fn per event will order by id.';
@@ -49,7 +49,7 @@ CREATE table if not exists @extschema@.rppd_function_log (
     fn_id int not null,
     trig_value json,
     trig_type int not null default 0,
-    finished_at timestamp, -- not null default current_timestamp,
+    finished_at timestamptz, -- not null default current_timestamp,
     took_sec int not null default 0,
     error_msg text
 );
@@ -69,8 +69,8 @@ CREATE table if not exists @extschema@.rppd_cron (
     fn_id int not null,
     cron varchar(64) not null,
     timeout_sec int,
-    finished_at timestamp,
-    started_at timestamp,
+    finished_at timestamptz,
+    started_at timestamptz,
     error_msg text
 );
 

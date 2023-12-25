@@ -73,7 +73,7 @@ impl MetaConfig {
 
 fn connect(host:&String) -> Result<GrpcClient<Channel>, String> {
     let path = format!("http://{}", host);
-    pgrx::warning!("connecting to: {}", path);
+    // pgrx::warning!("connecting to: {}", path);
     match CONFIG.runtime.lock() {
         Ok(runtime) => {
             runtime.block_on(async move {
@@ -135,9 +135,9 @@ fn rppd_event<'a>(
 
         if let Some(e) = CONFIG.needs_re_connect(host.as_str()) {
             if e.len() > 0 {
-                pgrx::warning!("connecting to: {}", host);
+                pgrx::notice!("Connecting to RPPD server at {}", host);
             } else {
-                pgrx::warning!("re-connecting to: {}, previously: {}", host, e);
+                pgrx::warning!("Re-connecting to RPPD server at {}, previously: {}", host, e);
             }
 
             let client = connect(&host);

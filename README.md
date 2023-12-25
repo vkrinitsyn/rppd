@@ -108,15 +108,17 @@ print(cur.fetchall())
 create table if not exists test_source (id serial primary key, input text);
 create table if not exists test_sink (id serial primary key, data text);
 \set code `cat test_fn.py`
-insert into rppd_function (code, checksum, schema_table, topic) values (:code, 'na', 'public.test_source', '.id');
-insert into rppd_source (input) values ('test input');
+insert into rppd_function (code, checksum, schema_table, topic) values (:'code', 'na', 'public.test_source', '.id');
+CREATE TRIGGER test_src_event AFTER INSERT OR UPDATE OR DELETE ON test_source FOR EACH ROW EXECUTE PROCEDURE rppd_event();
+insert into test_source (input) values ('test input');
+select * from test_sink;
 ```
 
 ### python test example
 for the test above
 ```python
 cur = DB.cursor()
-cur.execute("SELECT input FROM test_source where id = %s", ([PK]))
+cur.execute("SELECT input FROM test_source where id = %s", ([ID]))
 input = cur.fetchall()
 if len(input) > 0:
     cur.execute("insert into test_sink (data) values (%s)", ( input[0] ))

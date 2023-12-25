@@ -66,7 +66,6 @@ pub struct RpFnLog {
     pub(crate) fn_id: i32,
     pub(crate) took_sec: i32,
 
-    // TODO implement any
     pub(crate) trig_value: Option<sqlx::types::Json<HashMap<String, String>>>,
 
     /// DbAction
@@ -225,7 +224,8 @@ impl PyContext {
                     locals.push((pk.to_ascii_uppercase(), pk_val.into_py(py)));
                 }
             }
-            for i in 0..locals.len() { locals.push((format!("_nil{}", i), "".into_py(py))); } // to avoid out of index
+            // println!("call with: {:?}", locals);
+            for i in locals.len()..3 { locals.push((format!("_nil{}", i), "".into_py(py))); } // to avoid out of index
             let locals = [
                 (DB, self.py_db.as_ref(py)),
                 (TOPIC, fc.fns.topic.clone().into_py(py).as_ref(py)),

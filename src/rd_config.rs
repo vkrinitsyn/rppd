@@ -14,7 +14,8 @@ use lazy_static::lazy_static;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Instant;
-use pgrx::PgTriggerError;
+use chrono::Utc;
+use pgrx::{Json, PgTriggerError};
 use tonic::{Request, Response, Status};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -124,7 +125,7 @@ fn make_sql_cnd(input: &Vec<PkColumn>) -> String {
   let mut sql = String::new();
   for idx in 0..input.len() {
     if idx > 0 { sql.push_str(" and "); }
-    sql.push_str(format!("{} = ${}", input[idx].column_name, idx).as_str());
+    sql.push_str(format!("{} = ${}", input[idx].column_name, idx+1).as_str());
   }
   sql
 }
@@ -137,7 +138,6 @@ impl Cluster {
 
   #[inline]
   async fn reload_hosts(&self, x: &EventRequest) -> Result<(), String> {
-    let id = self.node_id.load(Ordering::Relaxed);
     let sql = RpHost::select(&self.cfg.schema, "active_since is not null");
     let sql = if x.pks.len() == 0 { sql } else { format!("{} and {}", sql, make_sql_cnd(&x.pks))};
     let mut r = sqlx::query_as::<_, RpHost>(sql.as_str());
@@ -154,11 +154,11 @@ impl Cluster {
     let rs = r.fetch_all(&self.db()).await
         .map_err(|e| e.to_string())?;
     let mut loaded = BTreeSet::new();
+    let host = format!("{}:{}", self.cfg.bind, self.cfg.port);
     for n in rs {
       loaded.insert(n.id);
-      if n.id == id { // this host
-        // self.cfg.bind
-
+      if n.host == host { // this host
+        self.node_id.store(n.id, Ordering::Relaxed);
       } else {
         if n.active_since.is_none() { // remove?
           //
@@ -250,7 +250,7 @@ impl Cluster {
 
     }
     self.fns.write().await.retain(|k, _v| loaded.contains(k));
-
+    println!("loaded {} function(s) for {} table(s) and {} topic(s)", self.fns.read().await.len(), self.fn_tt.read().await.len(), self.fn_id.read().await.len(), );
     Ok(())
   }
 
@@ -281,12 +281,15 @@ impl Cluster {
         .map_err(|e| format!("Loading cluster of active nodes: {}", e))?;
     let mut master = false; // master is present and up
     let mut found_self = false; // is self registered
+    let mut found_self_master = false; // is self registered
     let r_len = r.len();
     let mut id = 0;
     for n in r {
-      if n.host == c.this {
+      if n.host_name == c.this {
         found_self = true;
         id = n.id;
+        found_self_master = n.master.unwrap_or(false);
+        master = master || found_self_master
       } else {
         let node = n.connect().await;
         master = master || n.master.unwrap_or(false) && node.is_ok();
@@ -317,7 +320,7 @@ impl Cluster {
       cron: Arc::new(Default::default()),
     };
 
-    cluster.run(rsvr, r_len == 0 || !found_self, !master).await;
+    cluster.run(rsvr, r_len == 0 || !found_self, !master && !found_self_master).await;
     println!("Cluster instance created");
     Ok(cluster)
   }
@@ -365,35 +368,34 @@ impl Cluster {
 
     let mut pkk = vec![];
     let mut logs = vec![];
-
+    let mut trig_value = HashMap::new();
+    for p in &r.pks {
+      if let Some(pk) = &p.pk_value {
+        trig_value.insert(p.column_name.clone(), match pk {
+          IntValue(v) => v.to_string(),
+          BigintValue(v) => v.to_string()
+        });
+      }
+    }
+    let node_id = self.node_id.load(Ordering::Relaxed);
     let map = self.fns.read().await;
     for fn_id in &fn_ids {
       if let Some(f) = map.get(fn_id) {
-        if !r.id_value && f.fns.is_dot() {
+        let is_dot = f.fns.is_dot();
+        if is_dot && !trig_value.contains_key(&f.fns.topic.clone().split_off(1)) {
           pkk.push(f.fns.to_repeat_result());
         }
         if pkk.len() == 0 {
-          for p in &r.pks {
-            if let Some(pk) = &p.pk_value {
-              //
-            }
-          }
           logs.push((RpFnLog {
             id: 0,
-            node_id: 0, // TODO this host or another node
+            node_id: node_id.clone(),
             fn_id: f.fns.id,
             took_sec: 0,
             trig_type: r.event_type,
-            trig_value: Default::default(), // TODO FIXME NOW set value
-            /*
-            r.pk_value.as_ref().map(|e| match e {
-              IntValue(v) => v as i64,
-              BigintValue(v) => v,
-            }),
-             */
+            trig_value: Some(sqlx::types::Json::from(trig_value.clone())),
             finished_at: None,
             error_msg: None,
-          }, f.fns.cleanup_logs_min, f.fns.is_dot())
+          }, f.fns.cleanup_logs_min, is_dot)
           );
         }
       }
@@ -409,8 +411,8 @@ impl Cluster {
           sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&self.cfg.schema).as_str())
               .bind(fl.node_id)
               .bind(fl.fn_id)
-              // .bind(fl.trig_value.clone()) // TODO no value set yet
               .bind(fl.trig_type)
+              .bind(fl.trig_value.clone())
               .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
         } else {
           sqlx::query_scalar::<_, i64>(RpFnLog::insert(&self.cfg.schema).as_str())
@@ -433,7 +435,7 @@ impl Cluster {
     let pool = self.db();
     let host = format!("{}:{}", self.cfg.bind, self.cfg.port);
     if insert {
-      println!("Self registering: {} {}", host, if master { "as master"} else {""});
+      println!("Self registering: {} by name: {} {}", host, self.cfg.this, if master { "as master"} else {""});
       let sql = INSERT_HOST.replace("%SCHEMA%", &self.cfg.schema.as_str());
       let id = sqlx::query_scalar::<_, i32>(sql.as_str())
           .bind(&host)
@@ -447,6 +449,7 @@ impl Cluster {
     let id = self.node_id.load(Ordering::Relaxed);
 
     if !insert && master {
+      println!("Self mark as master: {} by name: {} ", host, self.cfg.this);
       let sql = UP_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
       if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
         eprintln!("{}", e);
@@ -495,7 +498,11 @@ impl Cluster {
         let r = PyContext::new(&fc.fns, &self.cfg.db_url())
             .map(|p| p.invoke(&f, fc))
             .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url(), e));
-
+        println!("executed {}#{} {}", fc.fns.schema_table, fc.fns.topic,
+                 match &r {
+                  Ok(_) => "OK".to_string(),
+                  Err(e) => e.clone(),
+        });
           f.update(started.elapsed().as_secs(), self.db(), &self.cfg.schema).await;
       }
     }
@@ -547,6 +554,7 @@ impl Grpc for Cluster {
         }
       }
       ScheduleResult::Repeat(repeat_with) => {
+        println!("re-requesting to repeat: {:?}", repeat_with);
         return Ok(Response::new(EventResponse{ saved: false, repeat_with }));
       }
     }
