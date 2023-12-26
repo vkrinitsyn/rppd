@@ -13,28 +13,9 @@ https://grpc.io/docs/protoc-installation/
 ./make.sh
 ```
 
-### Trigger build
-```shell
-cargo install cargo-pgrx
-cargo pgrx init
-
-cargo build --lib --release -F pg14
-cargo pgrx package
-
-v=$(pg_config --version)
-echo ${v:11:2}
-sudo cp target/release/rppd-pg14/usr/share/postgresql/14/extension/rppd* /usr/share/postgresql/14/extension/
-sudo cp target/release/rppd-pg14/usr/lib/postgresql/14/lib/rppd.so /usr/lib/postgresql/14/lib
-psql -c "create extension rppd" 
-```
-
-### Server build
-```shell
-cargo install sqlx-cli
-cargo sqlx prepare
-```
 
 ### FAQ
+> [!NOTE]
 
 IF
 > Mismatched rust versions: cargo-pgrx Mismatched rust versions: cargo-pgrx
@@ -57,6 +38,7 @@ cargo pgrx init
 - If main service shutting down of unavailable than one ot service become a master. 
 - No cluster leader election, but whoever be able to safe and undoubted updated self as master on configuration table. 
 
+![topics](rppd%20schema.png)
 
 ## Usage
 
@@ -127,10 +109,10 @@ if len(input) > 0:
 
 
 ## TODO
-> [!NOTE]
 
 ### Core features and improvements 
 - Python function DB connection pool
+- Connect to multiple DB (rw/ro - replica)
 - Python function code sign, approve and verify on call
 - Monitoring cadence and hardware with email notification
 
@@ -138,3 +120,8 @@ if len(input) > 0:
 - RESTapi/PubSub/ServiceBus to trigger events
 - OpenTelemetry logging integration like Appins  
 - Keyvault integration for a Database connections
+
+
+todo: test multiple nodes, save logs, restore incomplete functions
+todo impl: queue/topic, cleanup saved logs, add debug function
+
