@@ -18,8 +18,11 @@ mod arg_config;
 mod gen;
 mod rd_config;
 mod rd_fn;
+mod rd_queue;
 
+mod py;
 
+mod rd_rpc;
 
 use i18n_embed::{
 	fluent::{fluent_language_loader, FluentLanguageLoader},

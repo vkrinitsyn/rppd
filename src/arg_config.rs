@@ -1,7 +1,7 @@
 /*%LPH%*/
 
 use std::collections::{BTreeMap, HashMap};
-use std::env;
+use std::{env, fs};
 use std::env::Args;
 use std::fmt::{Display};
 use std::fs::File;
@@ -24,7 +24,7 @@ pub const CFG_CRON_TABLE: &str = "rppd_cron";
 pub const SCHEMA: &str = "schema";
 pub const URL: &str = "url";
 pub const BIND: &str = "bind";
-pub const DEFAULT_BIND: &str = "localhost:8881";
+pub const LOCALHOST: &str = "localhost";
 
 pub const MAX_QUEUE_SIZE: usize = 1000;
 pub const DEFAULT_PORT: u16 = 8881;
@@ -44,25 +44,6 @@ pub fn usage() -> String {
             DEFAULT_SCHEMA,
             CFG_TABLE
     )
-}
-
-/// names of config names to build CfgVo from config table
-#[derive(Debug, Clone)]
-pub struct ClusterConfigNames {
-    // db schema.table
-    // pub table: String,
-    // pub id_name: String,
-    // pub column_name: String,
-    // pub column_value: String,
-    // // код колонок, чтобы не грузить (filter) лишнего в CfgVo, для конфигурации кластера
-    // pub module_column: String,
-    // // pub module_code: String,
-}
-
-impl ClusterConfigNames {
-    pub const COLUMN_NAME_SIZE: usize = 80;
-    pub const COLUMN_VALUE_SIZE: usize = 250;
-    pub const COLUMN_MODULE_DEFAULT: &'static str = "' '";
 }
 
 /// App start args
@@ -101,8 +82,8 @@ impl Default for ArgConfig {
             _ => "".to_string(),
         };
 		let this = match std::env::var_os("HOSTNAME") {
-            Some(a) => a.to_str().unwrap_or("localhost").to_string(),
-            _ => "localhost".to_string(),
+            Some(a) => a.to_str().unwrap_or(LOCALHOST).to_string(),
+            _ => fs::read_to_string("/etc/hostname").unwrap_or(LOCALHOST.to_string()),
         };
 
 	    ArgConfig {
@@ -112,7 +93,7 @@ impl Default for ArgConfig {
             pwd,
             file: None,
             schema: "public".to_string(),
-            bind: "localhost".to_string(),
+            bind: LOCALHOST.to_string(),
             port: DEFAULT_PORT,
             max_queue_size: ArgConfig::max_queue_size(),
             force_master: false,
@@ -286,6 +267,8 @@ impl ArgConfig {
 #[cfg(test)]
 mod tests {
     use std::{fs};
+    use std::process::Command;
+    use tokio::io::AsyncReadExt;
     use super::*;
     use uuid::Uuid;
 

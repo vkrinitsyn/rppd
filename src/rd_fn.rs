@@ -1,5 +1,6 @@
 /*%LPH%*/
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex};
@@ -11,8 +12,9 @@ use sqlx::{Pool, Postgres};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use tonic::Status;
+use uuid::Uuid;
 use crate::gen::rg::{event_request, EventRequest, PkColumn};
-use crate::rd_config::{Cluster, ScheduleResult};
+use crate::rd_config::{Cluster, TopicType};
 
 /// ManuallyDrop for PyModule and db: PyObject
 pub struct PyContext {
@@ -34,36 +36,116 @@ impl Drop for PyContext {
 }
 
 
+#[derive(Debug, Clone)]
 pub enum PyCall {
-    /// local call
-    Local(PyContext),
-    /// host id
-    Remote(i32)
+    /// scheduled local future call. this._fn must set
+    Local(RpFnLog),
+    /// to track a queue or able to return
+    InProgress(Uuid),
+    // to be removed by retain
+    // Taken,
+    /// host id for future use
+    Remote(i32, Uuid)
 }
 
-pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min from %SCHEMA%.rppd_function ";
+pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority from %SCHEMA%.rppd_function ";
 
 /// Rust Python Function
-#[derive(sqlx::FromRow, Debug, Clone)]
+#[derive(sqlx::FromRow, PartialEq, Debug, Clone)]
 pub struct RpFn {
     pub(crate) id: i32,
     pub(crate) code: String,
     pub(crate) checksum: String,
     pub(crate) schema_table: String,
-    /// use max_concur = 0 for queue
     pub(crate) topic: String,
     /// max concurrent event execution on the topic to make queue
     pub(crate) queue: bool,
     pub(crate) cleanup_logs_min: i32,
+    /// queue priority
+    pub(crate) priority: i32,
 }
+
+impl RpFnId {
+    pub(crate) fn fromf(f: &RpFn) -> Self {
+        RpFnId {
+            id: f.id,
+            queue: f.queue,
+            priority: f.priority,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RpFnId {
+    pub(crate) id: i32,
+    pub(crate) queue: bool,
+    pub(crate) priority: i32,
+}
+
+
+impl Default for RpFnId {
+    fn default() -> Self {
+        RpFnId {
+            id: 0,
+            queue: false,
+            priority: 0,
+        }
+    }
+}
+
+impl Ord for RpFnId {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id.cmp(&other.id)
+    }
+
+    #[inline]
+    fn max(self, other: Self) -> Self where Self: Sized {
+        if self.id < other.id { self } else { other }
+    }
+
+    #[inline]
+    fn min(self, other: Self) -> Self where Self: Sized {
+        if self.id > other.id { self } else { other }
+    }
+
+    #[inline]
+    fn clamp(self, min: Self, max: Self) -> Self where Self: Sized, Self: PartialOrd {
+        if self.id < min.id { min }
+        else if self.id > max.id { max }
+        else { self }
+    }
+}
+
+impl PartialOrd for RpFnId {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for RpFnId {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for RpFnId { }
 
 /// Rust Python Function Log
 #[derive(sqlx::FromRow, PartialEq, Debug, Clone)]
 pub struct RpFnLog {
     pub(crate) id: i64,
+    /// the host where the even been executed
     pub(crate) node_id: i32,
     /// schema.table (topic)
     pub(crate) fn_id: i32,
+    #[sqlx(skip)] /// ID or uuid. Must set while queue executing
+    pub(crate) uid: Option<Uuid>,
+    #[sqlx(skip)] /// transient copy from RpFn
+    pub(crate) fn_idp: Option<RpFnId>,
+
     pub(crate) took_sec: i32,
 
     pub(crate) trig_value: Option<sqlx::types::Json<HashMap<String, String>>>,
@@ -75,6 +157,23 @@ pub struct RpFnLog {
 }
 
 pub(crate) const SELECT_CRON: &str = "select id, fn_id, cron, timeout_sec, started_at, finished_at, error_msg from %SCHEMA%.rppd_cron";
+
+impl Default for RpFnLog {
+    fn default() -> Self {
+        RpFnLog {
+            id: 0,
+            node_id: 0,
+            fn_id: 0,
+            uid: None,
+            fn_idp: Some(RpFnId::default()),
+            took_sec: 0,
+            trig_value: None,
+            trig_type: 0,
+            finished_at: None,
+            error_msg: None,
+        }
+    }
+}
 
 /// Rust Python Function Cron
 #[derive(sqlx::FromRow, PartialEq, Debug, Clone)]
@@ -89,31 +188,8 @@ pub struct RpFnCron {
 }
 
 
-/// few links to collections from the [Cluster] to run load and operate on background
-#[derive(Clone)]
-pub(crate) struct RpFnBgCtx {
-    pub(crate) fns: Arc<RwLock<BTreeMap<i32, RpFn>>>,
-    pub(crate) pys: Arc<RwLock<BTreeMap<i32, Mutex<PyCall>>>>,
-    pub(crate) db: Pool<Postgres>,
-
-}
-
-/// topicID(or0), subtopicID
-#[derive(Clone)]
-pub(crate) struct RpFnTpId {
-    pub(crate) topic_id: i32,
-    pub(crate) subtopic_id: i32,
-}
-
 pub(crate) struct RpFnCtx {
     pub(crate) fns: RpFn,
-
-    /// comment on column @extschema@.rppd_function.topic see fns.topic
-    /// is '"": queue per table; => "schema.table"
-    /// ".{column_name}": queue per value of the column in this table; => "schema.table.column.value"
-    /// "{any_name}": global queue'; => "...name"
-
-    pub(crate) topics: HashMap<RpFnTpId, VecDeque<RpFnLog>>,
 
 }
 
@@ -126,7 +202,43 @@ impl RpFn {
         self.topic.len() > 0 && self.topic.as_bytes()[0] == b'.'
     }
 
-    /// trigger re-run event and re-schedule this
+    #[inline]
+    pub(crate) fn to_pk_names(&self) -> HashSet<String> {
+        let mut names = HashSet::new();
+        let n:Vec<&str> = self.topic.split(".").collect();
+        for pk in n {
+            if pk.len() > 0 {
+                names.insert(pk.to_string());
+            }
+        }
+        names
+    }
+
+    /// create real topic name
+    #[inline]
+    pub(crate) fn to_topic(&self, l: &RpFnLog) -> TopicType {
+        if self.topic.len() == 0 {
+            self.schema_table.clone()
+        } else if self.is_dot() {
+            let mut name = String::new();
+            if let Some(v) = &l.trig_value {
+                let names = self.to_pk_names();
+                for (k, v) in &v.0 {
+                    if names.contains(k) {
+                        name.push_str(format!(".{}={}", k, v).as_str());
+                    }
+                }
+            }
+            if name.len() == 0 {
+                format!("{}{}=NULL", self.schema_table, self.topic)
+            } else {
+                format!("{}{}", self.schema_table, name)
+            }
+        } else {
+            self.topic.clone()
+        }
+    }
+
     #[inline]
     pub(crate) fn to_repeat_result(&self) -> PkColumn {
         PkColumn {
@@ -144,11 +256,11 @@ impl RpFn {
             match map.get_mut(&self.topic) {
                 None => {
                     let mut set = BTreeSet::new();
-                    set.insert(self.id.clone());
+                    set.insert(RpFnId::fromf(&self));
                     map.insert(self.topic.clone(), set);
                 }
                 Some(set) => {
-                    set.insert(self.id.clone());
+                    set.insert(RpFnId::fromf(&self));
                 }
             }
         }
@@ -190,11 +302,10 @@ pub const POSTGRES_PY: &str = "psycopg2";
 pub const DB: &str = "DB";
 pub const TOPIC: &str = "TOPIC";
 pub const TABLE: &str = "TABLE";
-pub const PK: &str = "PK";
-/// environment level: local, dev, test, prod
 pub const TRIG: &str = "TRIG";
 
 impl PyContext {
+    /// create Python runtime and DB connection
     #[inline]
     pub(crate) fn new(f: &RpFn, db_url: &String) -> Result<PyContext, PyErr> {
 
@@ -214,9 +325,26 @@ impl PyContext {
         })
     }
 
-    pub fn invoke(&self, x: &RpFnLog, fc: &RpFnCtx) -> Result<(), String> {
 
-    // pub fn invoke(&self, script: String,  fn_name: String,  table: String, env: HashMap<String, String>, pks: Vec<u64>) -> Result<(), String> {
+
+    pub fn dict<'a>(&self, x: &'a RpFnLog, fc: &'a RpFn, py: Python<'a>) -> &'a PyDict {
+        let local = [
+            (DB, self.py_db.as_ref(py)),
+            // (TOPIC, fc.fns.topic.clone().into_py(py).as_ref(py)),
+            // (TABLE, fc.fns.schema_table.clone().into_py(py).as_ref(py)),
+            // (TRIG, x.trig_type.clone().into_py(py).as_ref(py)),
+        ].to_vec();
+        if let Some(pks) = &x.trig_value {
+            for (pk, pk_val) in pks.iter() {
+                // local.push((pk.to_ascii_uppercase().as_str(), pk_val.into_py(py).as_ref(py)));
+            }
+        }
+        local[..].into_py_dict(py)
+    }
+
+    pub(crate) fn invoke(&self, x: &RpFnLog, fc: &RpFn) -> Result<(), String> {
+
+        // pub fn invoke(&self, script: String,  fn_name: String,  table: String, env: HashMap<String, String>, pks: Vec<u64>) -> Result<(), String> {
         Python::with_gil(|py| {
             let mut locals = Vec::new();
             if let Some(pks) = &x.trig_value {
@@ -228,23 +356,25 @@ impl PyContext {
             for i in locals.len()..3 { locals.push((format!("_nil{}", i), "".into_py(py))); } // to avoid out of index
             let locals = [
                 (DB, self.py_db.as_ref(py)),
-                (TOPIC, fc.fns.topic.clone().into_py(py).as_ref(py)),
-                (TABLE, fc.fns.schema_table.clone().into_py(py).as_ref(py)),
+                (TOPIC, fc.topic.clone().into_py(py).as_ref(py)),
+                (TABLE, fc.schema_table.clone().into_py(py).as_ref(py)),
                 (TRIG, x.trig_type.clone().into_py(py).as_ref(py)),
-                (locals[0].0.as_str(), locals[0].1.as_ref(py)), // TODO fix reference problem
+                (locals[0].0.as_str(), locals[0].1.as_ref(py)), // TODO fix the reference problem self.dict()
                 (locals[1].0.as_str(), locals[1].1.as_ref(py)),
                 (locals[2].0.as_str(), locals[2].1.as_ref(py)),
             ].into_py_dict(py);
+            let local = self.dict(x, fc, py);
 
-            py.run(fc.fns.code.as_str(), None, Some(locals))
-        }).map_err(|e| format!("error on run [{}]: {}", fc.fns.schema_table, e))
+            py.run(fc.code.as_str(), None, Some(locals))
+        }).map_err(|e| format!("error on run [{}]: {}", fc.schema_table, e))
 
     }
 
 }
 
 
-const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, finished_at, took_sec, error_msg from %SCHEMA%.rppd_function_log";
+
+const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, finished_at, took_sec, error_msg from %SCHEMA%.rppd_function_log ";
 
 const INSERT_LOG_V: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type, trig_value) values ($1, $2, $3, $4) returning id";
 const INSERT_LOG: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type) values ($1, $2, $3) returning id";
@@ -288,18 +418,46 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) async fn update(&self, took: u64, db: Pool<Postgres>, schema: &String)  {
+    pub(crate) async fn update(&self, took: u64, r: Option<String>, db: Pool<Postgres>, schema: &String)  {
         if self.id == 0 { return; }
-        let sql = "update %SCHEMA%.rppd_function_log set finished_at = current_timestamp, took_sec = $1 where id = 2";
+        let sql = "update %SCHEMA%.rppd_function_log set finished_at = current_timestamp, took_sec = $1, error_msg = $2 where id = $3";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(took as i32)
+            .bind(r)
             .bind(self.id)
             .execute(&db).await {
             eprintln!("{}", e);
         }
     }
 
+    #[inline]
+    pub(crate) async fn update_err(&self, r: String, db: Pool<Postgres>, schema: &String)  {
+        if self.id == 0 { return; }
+        let sql = "update %SCHEMA%.rppd_function_log set error_msg = $1 where id = $2";
+        let sql = sql.replace("%SCHEMA%", schema.as_str());
+        if let Err(e) = sqlx::query(sql.as_str())
+            .bind(Some(r))
+            .bind(self.id)
+            .execute(&db).await {
+            eprintln!("{}", e);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_queue(&self, def: bool) -> bool {
+        match &self.fn_idp {
+            None => def,
+            Some(f) => f.queue
+        }
+    }
+
+    #[inline]
+    pub(crate) fn to_line(self) -> VecDeque<PyCall> {
+        let mut line = VecDeque::new();
+        line.push_front(PyCall::Local(self));
+        line
+    }
 
 }
 

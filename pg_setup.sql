@@ -27,6 +27,7 @@ CREATE table if not exists @extschema@.rppd_function (
     checksum varchar(64) not null,
     schema_table varchar(64) not null,
     topic varchar(64) not null default '', -- ''
+    priority int not null default 1,
     queue bool not null default true,
     cleanup_logs_min int not null default 0
 -- TODO wishes: sign, approve, cadence, env pass

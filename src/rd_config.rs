@@ -2,6 +2,7 @@
 
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::ops::Deref;
 use sqlx::{Database, PgPool, Pool, Postgres};
 use crate::gen::rg::grpc_client::GrpcClient;
 use crate::gen::rg::*;
@@ -12,28 +13,32 @@ use std::str::FromStr;
 use async_trait::async_trait;use rust_embed::RustEmbed;
 use lazy_static::lazy_static;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::time::Instant;
-use chrono::Utc;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
+use std::time::{Duration, Instant};
+use chrono::{format, Utc};
 use pgrx::{Json, PgTriggerError};
 use tonic::{Request, Response, Status};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tonic::transport::{Channel, Server};
+use tonic::transport::{Channel, Endpoint, Server};
 
 use crate::gen::rg::grpc_server::{Grpc, GrpcServer};
 
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock, RwLockWriteGuard};
 use tonic::codegen::Body;
+use uuid::Uuid;
 use crate::arg_config::*;
 use crate::gen::rg::*;
 use crate::gen::rg::pk_column::PkValue;
 use crate::gen::rg::pk_column::PkValue::{BigintValue, IntValue};
 use crate::rd_fn::*;
+use crate::rd_queue::QueueType;
+use crate::rd_rpc::ScheduleResult;
 
 const SELECT: &str = "select id, host, host_name, active_since, master, max_db_connections from %SCHEMA%.rppd_config where ";
 const INSERT_HOST: &str = "insert into %SCHEMA%.rppd_config (host, host_name, master) values ($1, $2, $3) returning id";
 const UP_MASTER: &str = "update %SCHEMA%.rppd_config set master = true where id = $1";
+pub const TIMEOUT_MS: u64 = 1000;
 
 /// Rust Python Host
 ///
@@ -53,10 +58,13 @@ impl RpHost {
   }
 
   pub(crate) async fn connect(&self) -> Result<Mutex<GrpcClient<Channel>>, String> {
-    // TODO FIXME impl
-    unimplemented!();
-
-    Err("na".into())
+    let path = format!("http://{}", self.host);
+      GrpcClient::connect(Duration::from_millis(TIMEOUT_MS),
+                          Endpoint::from_str(path.as_str())
+                              .map_err(|e| format!("connecting to {} {}", path, e))?)
+          .await
+          .map(|c| Mutex::new(c))
+          .map_err(|e| format!("connecting {}", e))
   }
 
 }
@@ -69,6 +77,9 @@ impl RpHost {
 
 pub(crate) type TopicType = String;
 
+/// Topic definition extracted from topic type and event
+pub(crate) type TopicDef = String;
+
 
 /// String of schema.table
 pub(crate) type SchemaTableType = String;
@@ -80,46 +91,55 @@ pub(crate) type HostType = String;
 #[derive(Clone)]
 pub(crate) struct Cluster {
   /// parsed configs
-  cfg: ArgConfig,
+  pub(crate) cfg: ArgConfig,
   /// is the instance play master, receive trigger calls, schedule and call others
-  master: Arc<AtomicBool>,
+  pub(crate) master: Arc<AtomicBool>,
   /// is the node loaded all logs
-  started: Arc<AtomicBool>,
-  node_id: Arc<AtomicI32>,
+  pub(crate) started: Arc<AtomicBool>,
+  pub(crate) node_id: Arc<AtomicI32>,
+  /// configured
+  pub(crate) max_db_connections: Arc<AtomicU16>,
+  /// contents created
+  pub(crate) max_context: Arc<AtomicU16>,
 
   /// postgres connection pool use by sqlx on init
-  db: Pool<Postgres>,
+  pub(crate) db: Pool<Postgres>,
 
   /// to nodes, mostly use by master
-  nodes: Arc<RwLock<BTreeMap<i32, RpHost>>>,
+  pub(crate) nodes: Arc<RwLock<BTreeMap<i32, RpHost>>>,
   /// connections to nodes
-  node_connections: Arc<RwLock<BTreeMap<i32, Result<Mutex<GrpcClient<Channel>>, String>>>>,
+  pub(crate) node_connections: Arc<RwLock<BTreeMap<i32, Result<Mutex<GrpcClient<Channel>>, String>>>>,
 
   /// connections to nodes, mostly use by master
   /// host to node_id
-  node_ids: Arc<RwLock<HashMap<HostType, i32>>>,
+  pub(crate) node_ids: Arc<RwLock<HashMap<HostType, i32>>>,
 
   /// common queue to trigger bg dispatcher
-  sender: Sender<RpFnLog>,
-  /// log.id might be unsaved
-  queue: Arc<RwLock<VecDeque<RpFnLog>>>,
+  pub(crate) sender: Sender<Option<RpFnLog>>,
+  // log.id might be unsaved
+  // queue: Arc<RwLock<VecDeque<RpFnLog>>>,
 
   /// Python functions execution by fn id
   /// internal fn topics and queues
-  fns: Arc<RwLock<BTreeMap<i32, RpFnCtx>>>,
+  pub(crate) fns: Arc<RwLock<BTreeMap<i32, RpFn>>>,
 
   /// tablename -> topic
   pub(crate) fn_tt: Arc<RwLock<HashMap<SchemaTableType, HashSet<TopicType>>>>,
 
-  /// topic -> function id
-  pub(crate) fn_id: Arc<RwLock<HashMap<TopicType, BTreeSet<i32>>>>,
+  /// topic -> function id (priority)
+  pub(crate) fn_id: Arc<RwLock<HashMap<TopicType, BTreeSet<RpFnId>>>>,
 
-  /// todo will dispose when unused
+  /// todo dispose when unused after while
   /// max is max_concurrent
   pub(crate) exec: Arc<RwLock<VecDeque<Mutex<PyContext>>>>,
-  
+
+  /// currently executing queues per topic as generated name. None value means the RpFnLog is in progress as a queue set
+  pub(crate) queue: Arc<RwLock<QueueType>>,
+
+  /// TODO implement cron
   pub(crate) cron: Arc<RwLock<Vec<RpFnCron>>>,
 }
+
 #[inline]
 fn make_sql_cnd(input: &Vec<PkColumn>) -> String {
   let mut sql = String::new();
@@ -137,7 +157,7 @@ impl Cluster {
 
 
   #[inline]
-  async fn reload_hosts(&self, x: &EventRequest) -> Result<(), String> {
+  pub(crate) async fn reload_hosts(&self, x: &EventRequest) -> Result<(), String> {
     let sql = RpHost::select(&self.cfg.schema, "active_since is not null");
     let sql = if x.pks.len() == 0 { sql } else { format!("{} and {}", sql, make_sql_cnd(&x.pks))};
     let mut r = sqlx::query_as::<_, RpHost>(sql.as_str());
@@ -159,6 +179,7 @@ impl Cluster {
       loaded.insert(n.id);
       if n.host == host { // this host
         self.node_id.store(n.id, Ordering::Relaxed);
+        self.max_db_connections.store(n.max_db_connections as u16, Ordering::Relaxed);
       } else {
         if n.active_since.is_none() { // remove?
           //
@@ -182,15 +203,15 @@ impl Cluster {
       }
     }
 
-    self.nodes.write().await.retain(|k, _v| loaded.contains(k));
-    self.node_connections.write().await.retain(|k, _v| loaded.contains(k));
+    self.nodes.write().await.retain(|k, _v| !loaded.contains(k));
+    self.node_connections.write().await.retain(|k, _v| !loaded.contains(k));
 
     Ok(())
   }
 
   /// load all or reload one or remove one function, include load/remove fs_logs
   #[inline]
-  async fn reload_fs(&self, x: &Option<EventRequest>) -> Result<(), String>{
+  pub(crate) async fn reload_fs(&self, x: &Option<EventRequest>) -> Result<(), String>{
     let sql = SELECT_FN.replace("%SCHEMA%", self.cfg.schema.as_str());
     let sql =  if x.is_none() || x.as_ref().unwrap().pks.len() == 0 { sql } else {
       format!("{} where {}", sql, make_sql_cnd(&x.as_ref().unwrap().pks))
@@ -212,7 +233,7 @@ impl Cluster {
         .map_err(|e| e.to_string())?;
     let mut loaded = BTreeSet::new();
     for f in r {
-      loaded.insert(f.id);
+      loaded.insert(RpFnId::fromf(&f));
       let mut map = self.fns.write().await;
       match map.get_mut(&f.id) {
         None => {
@@ -232,31 +253,31 @@ impl Cluster {
           match fmap.get_mut(&f.topic) {
             None => {
               let mut submap = BTreeSet::new();
-              submap.insert(f.id.clone());
+              submap.insert(RpFnId::fromf(&f));
               fmap.insert(f.topic.clone(), submap);
             }
             Some(submap) => {
-              submap.insert(f.id.clone());
+              submap.insert(RpFnId::fromf(&f));
             }
           }
               // .insert(f.topic.clone(), f.id.clone())
-          map.insert(f.id.clone(), RpFnCtx{ fns: f, topics: Default::default() });
+          map.insert(f.id.clone(), f);
         }
         Some(fx) => {
-          fx.fns.merge(f, &self);
+          fx.merge(f, &self);
         }
       }
 
 
     }
-    self.fns.write().await.retain(|k, _v| loaded.contains(k));
+    self.fns.write().await.retain(|k, _v| !loaded.contains(&RpFnId{id: *k, queue: false, priority: 0}));
     println!("loaded {} function(s) for {} table(s) and {} topic(s)", self.fns.read().await.len(), self.fn_tt.read().await.len(), self.fn_id.read().await.len(), );
     Ok(())
   }
 
   /// load all or reload one or remove one schedules
   #[inline]
-  async fn reload_crons(&self, x: &Option<EventRequest>) -> Result<(), String> {
+  pub(crate) async fn reload_crons(&self, x: &Option<EventRequest>) -> Result<(), String> {
     let mut cl = sqlx::query_as::<_, RpFnCron>(SELECT_CRON.replace("%SCHEMA%", self.cfg.schema.as_str()).as_str())
         .fetch_all(&self.db()).await.map_err(|e| e.to_string())?;
     let mut crons = self.cron.write().await;
@@ -306,6 +327,8 @@ impl Cluster {
       master: Arc::new(AtomicBool::new(false)),
       started: Arc::new(AtomicBool::new(false)),
       node_id: Arc::new(AtomicI32::new(id)),
+      max_db_connections: Arc::new(AtomicU16::new(10)),
+      max_context: Arc::new(AtomicU16::new(0)),
       db: pool,
       nodes: Arc::new(RwLock::new(nodes)),
       node_connections: Arc::new(RwLock::new(node_connections)),
@@ -315,7 +338,6 @@ impl Cluster {
       fns: Arc::new(Default::default()),
       fn_tt: Arc::new(Default::default()),
       fn_id: Arc::new(Default::default()),
-      // pys: Arc::new(Default::default()),
       exec: Arc::new(Default::default()),
       cron: Arc::new(Default::default()),
     };
@@ -326,7 +348,7 @@ impl Cluster {
   }
 
   /// prepare to run code on startup and background
-  async fn run(&self, mut rsvr: Receiver<RpFnLog>, self_register: bool, self_master: bool) {
+  async fn run(&self, mut rsvr: Receiver<Option<RpFnLog>>, self_register: bool, self_master: bool) {
     let ctx = self.clone();
 
     tokio::spawn(async move { // will execute as background, but will try to connect to this host
@@ -336,6 +358,7 @@ impl Cluster {
       }
 
       loop {
+
         match rsvr.recv().await {
           None => { break },
           Some(ci) => ctx.execute(ci).await
@@ -345,20 +368,18 @@ impl Cluster {
     });
   }
 
-  // async fn find(&self, table_name: &String) -> Result<RpFn, String> {
-  //   let topic = self.fn_tt.read().await.get(table_name).unwrap_or(&"".into());
-  //   let f_id = self.fn_id.read().await.get(topic).ok_or(format!("No function for table: {}", table_name))?;
-  //   self.fns.read().await.get(f_id).ok_or(format!("No function for table: {}", table_name))
-  // }
 
   /// find topic, fnb_id and node_id by table
   /// synchroniously on client DB transaction store log, if configured
-  async fn prepare(&self, r: &EventRequest) -> Result<ScheduleResult, String> {
+  #[inline]
+  pub(crate) async fn prepare(&self, r: &EventRequest) -> Result<ScheduleResult, String> {
     let mut fn_ids: BTreeSet<i32> = BTreeSet::new();
     if let Some(topics) = self.fn_tt.read().await.get(&r.table_name) {
         for topic in topics {
           if let Some(t) = self.fn_id.read().await.get(topic) {
-            fn_ids.append(&mut t.clone());
+            for fid in t {
+              fn_ids.insert(fid.id);
+            }
           }
         }
     };
@@ -381,21 +402,23 @@ impl Cluster {
     let map = self.fns.read().await;
     for fn_id in &fn_ids {
       if let Some(f) = map.get(fn_id) {
-        let is_dot = f.fns.is_dot();
-        if is_dot && !trig_value.contains_key(&f.fns.topic.clone().split_off(1)) {
-          pkk.push(f.fns.to_repeat_result());
+        let is_dot = f.is_dot();
+        if is_dot && !trig_value.contains_key(&f.topic.clone().split_off(1)) {
+          pkk.push(f.to_repeat_result());
         }
         if pkk.len() == 0 {
           logs.push((RpFnLog {
             id: 0,
             node_id: node_id.clone(),
-            fn_id: f.fns.id,
+            fn_id: f.id,
             took_sec: 0,
             trig_type: r.event_type,
             trig_value: Some(sqlx::types::Json::from(trig_value.clone())),
             finished_at: None,
             error_msg: None,
-          }, f.fns.cleanup_logs_min, is_dot)
+            fn_idp: None,
+            uid: None,
+          }, f.cleanup_logs_min, is_dot)
           );
         }
       }
@@ -472,9 +495,10 @@ impl Cluster {
     let _ = self.reload_fs(&None).await?;
 
     // load messages to internal queue from fn_log, check timeout and execution status,
-    for l in sqlx::query_as::<_, RpFnLog>(RpFnLog::select(&self.cfg.schema).as_str())
+    for l in sqlx::query_as::<_, RpFnLog>(
+      format!("{} where finished_at is null order by id", RpFnLog::select(&self.cfg.schema)).as_str())
         .fetch_all(&self.db()).await.map_err(|e| e.to_string())? {
-      let _ = self.sender.send(l).await.map_err(|e| e.to_string())?;
+      self.queueing(l, false).await; // append loaded on startup
     }
 
     let _ = self.reload_crons(&None).await?;
@@ -485,8 +509,21 @@ impl Cluster {
   }
 
 
-  /// primary loop of event execution
-  async fn execute(&self, f: RpFnLog) {
+  /// primary loop of event execution. If None, then take from queue
+  /// call by receive
+  #[inline]
+  async fn execute(&self, f: Option<RpFnLog>) {
+    let f = match f {
+      None => match self.queue.write().await.pick_one() {
+          None => { // nothing to execute from topics or not ready as a queue
+            return;
+          }
+          Some(f) => f
+        }
+      Some(f) => f
+    };
+
+    let max_con_cfg = self.max_db_connections.load(Ordering::Relaxed);
     match self.fns.read().await.get(&f.fn_id) {
       None => {
         eprintln!("no function by id: {}", f.fn_id);
@@ -494,102 +531,127 @@ impl Cluster {
       Some(fc) => {
         let started = Instant::now();
 
-        // TODO store PyContext to reuse
-        let r = PyContext::new(&fc.fns, &self.cfg.db_url())
-            .map(|p| p.invoke(&f, fc))
-            .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url(), e));
-        println!("executed {}#{} {}", fc.fns.schema_table, fc.fns.topic,
-                 match &r {
-                  Ok(_) => "OK".to_string(),
-                  Err(e) => e.clone(),
+        let c = self.exec.write().await.pop_back();
+        if c.is_none() && max_con_cfg <= self.max_context.load(Ordering::Relaxed) {
+          let _ = self.queueing(f, true).await; // re-queing, put back to queue
+          return;
+        }
+        let p = match c {
+          None => {
+            let p = match PyContext::new(&fc, &self.cfg.db_url())
+                .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url(), e)) {
+              Ok(p) => p,
+              Err(e) => {
+                f.update_err(e, self.db(), &self.cfg.schema).await;
+                let _ = self.sender.send(Some(f)).await; // re-queing
+                return;
+              }
+            };
+            self.max_context.fetch_add(1, Ordering::Relaxed);
+            Mutex::new(p)
+          }
+          Some(p) => p
+        };
+
+        // thread this >
+        let exec = self.exec.clone();
+        let db = self.db();
+        let schema = self.cfg.schema.clone();
+        let queue = self.sender.clone();
+        let fc = fc.clone();
+        let f = f.clone();
+        tokio::spawn(async move {
+          let r = p.lock().await.invoke(&f, &fc);
+
+          println!("executed {}#{} {}", fc.schema_table, fc.topic,
+                   match &r {
+                     Ok(_) => "OK".to_string(),
+                     Err(e) => e.clone(),
+                   });
+          f.update(started.elapsed().as_secs(), r.err(), db, &schema).await;
+          exec.write().await.push_front(p);
+          queue.send(None).await;
+          // Cluster::notify(queue).await;
         });
-          f.update(started.elapsed().as_secs(), self.db(), &self.cfg.schema).await;
       }
     }
   }
-}
 
+  /*
+  async fn notify(queue_priority: Sender<Option<RpFnLog>>) {
 
-pub(crate) enum ScheduleResult {
-  // no need schedule
-  None,
-  // Ok
-  Some(Vec<RpFnLog>),
-  // repeat a call with column name
-  Repeat(Vec<PkColumn>)
-}
+    let s = {
+      let mut map = queue_priority.write().await;
+      loop {
+        let (s, rm) = match map.iter_mut().next() {
+          Some((k, v)) =>
+            if v.len() <= 1 {
+              (None, Some(k.clone()))
+            } else {
+              (v.pop_back(), None)
+            }
+          None => (None, None)
+        };
+        let s = match rm {
+          None => s,
+          Some(k) =>
+             match map.remove(&k) {
+                None => None,
+                Some(mut vv) => vv.pop_back()
+          }
+        };
 
-#[async_trait]
-impl Grpc for Cluster {
-
-
-  async fn event(&self, request: Request<EventRequest>) -> Result<Response<EventResponse>, Status> {
-    let request = request.into_inner();
-    if request.optional_caller.is_some() && self.master.load(Ordering::Relaxed) {
-      return Ok(Response::new(EventResponse{ saved: false, repeat_with: vec![] })); // no reverse call from host to master
-    }
-
-    // println!(">>started:{}, cfgtable: {}: {}", self.started.load(Ordering::Relaxed),
-    //          request.table_name,
-    //          request.table_name.starts_with(&self.cfg.schema) && request.table_name.ends_with(CFG_TABLE));
-
-    if !self.started.load(Ordering::Relaxed) {
-      // not started
-      return if request.table_name.starts_with(&self.cfg.schema) && request.table_name.ends_with(CFG_TABLE) {
-        Ok(Response::new(EventResponse { saved: true, repeat_with: vec![] })) // init stage to set master
-      } else {
-        if request.optional_caller.is_some() {
-          Ok(Response::new(EventResponse { saved: false, repeat_with: vec![] })) // tell master, node is not ready
+        if s.is_none() && map.len() > 0 {
+          continue
         } else {
-          Err(Status::internal("not a master"))
-        }
-      };
-    }
-
-    match self.prepare(&request).await.map_err(|e| Status::internal(e))? {
-      ScheduleResult::None => {}
-      ScheduleResult::Some(fn_logs) => {
-        for fn_log in fn_logs {
-          let _ = self.sender.send(fn_log).await;
+          break s
         }
       }
-      ScheduleResult::Repeat(repeat_with) => {
-        println!("re-requesting to repeat: {:?}", repeat_with);
-        return Ok(Response::new(EventResponse{ saved: false, repeat_with }));
-      }
+    };
+    if let Some(sender) = s {
+      sender.send(()).await;
     }
 
-    if request.table_name.starts_with(&self.cfg.schema) {
-      if request.optional_caller.is_none() {
-        // TODO broadcast to cluster, set optional_caller to this as master
-      }
-
-      if let Err(e) = if request.table_name.ends_with(CFG_TABLE) {
-        self.reload_hosts(&request).await
-      } else if request.table_name.ends_with(CFG_FN_TABLE) {
-        self.reload_fs(&Some(request)).await
-      } else if request.table_name.ends_with(CFG_CRON_TABLE) {
-        self.reload_crons(&Some(request)).await
-      } else { // if request.table_name.ends_with(CFG_FNL_TABLE) {
-        // no trigger should be there
-        Ok(())
-      } {
-        return Err(Status::internal(e));
-      }
-    }
-
-    Ok(Response::new(EventResponse{ saved: true,  repeat_with: vec![] }))
   }
+  */
 
-  async fn status(&self, request: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
-    let _request = request.into_inner();
-    if !self.started.load(Ordering::Relaxed) {
-      Err(Status::unavailable("starting"))
-    } else if false // TODO inconsistent master
-    {
-      Err(Status::data_loss("inconsistent master"))
+
+  /// prepare to execute: put into queue or send to
+  // TODO link the queue (if use) to the node, if that node no longer available, than link to another one
+  #[inline]
+  pub(crate) async fn queueing(&self, l: RpFnLog, push_back: bool) {
+    let (topic, fn_id) = if let Some(f) = self.fns.read().await.get(&l.fn_id) {
+      (f.to_topic(&l), l.fn_idp.to_owned().unwrap_or(RpFnId::fromf(f)))
+    } else { ("".to_string(), RpFnId::default())}; // should not happens
+
+    if push_back {
+      let mut queues = self.queue.write().await;
+      match &l.uid {
+        None => queues.put_one(l, topic, fn_id, true),
+        Some(_uid) => queues.return_back(l, topic)
+      }
     } else {
-      Ok(Response::new(StatusResponse { master: 0, status: 0, queued: 0, in_proc: 0 }))
+      if self.max_db_connections.load(Ordering::Relaxed) > self.max_context.load(Ordering::Relaxed) {
+        let _ = self.sender.send(Some(l)).await; // queueing()
+      } else {
+        self.queue.write().await.put_one(l, topic, fn_id, false);
+      }
     }
   }
+}
+
+
+#[cfg(test)]
+mod tests {
+  #![allow(warnings, unused)]
+
+
+  use super::*;
+
+
+  #[tokio::test]
+  async fn test_p() {
+
+ }
+
 }
