@@ -14,39 +14,8 @@ use tokio::sync::mpsc::Sender;
 use tonic::Status;
 use uuid::Uuid;
 use crate::gen::rg::{event_request, EventRequest, PkColumn};
+use crate::py::PyCall;
 use crate::rd_config::{Cluster, TopicType};
-
-/// ManuallyDrop for PyModule and db: PyObject
-pub struct PyContext {
-    py_rt: ManuallyDrop<Py<PyModule>>,
-    py_db: ManuallyDrop<PyObject>,
-    created: Instant,
-}
-
-
-impl Drop for PyContext {
-    fn drop(&mut self) {
-        Python::with_gil(|_py| {
-            unsafe {
-                ManuallyDrop::drop(&mut self.py_rt);
-                ManuallyDrop::drop(&mut self.py_db);
-            }
-        });
-    }
-}
-
-
-#[derive(Debug, Clone)]
-pub enum PyCall {
-    /// scheduled local future call. this._fn must set
-    Local(RpFnLog),
-    /// to track a queue or able to return
-    InProgress(Uuid),
-    // to be removed by retain
-    // Taken,
-    /// host id for future use
-    Remote(i32, Uuid)
-}
 
 pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority from %SCHEMA%.rppd_function ";
 
@@ -175,25 +144,6 @@ impl Default for RpFnLog {
     }
 }
 
-/// Rust Python Function Cron
-#[derive(sqlx::FromRow, PartialEq, Debug, Clone)]
-pub struct RpFnCron {
-    pub(crate) id: i64,
-    pub(crate) fn_id: i32,
-    pub(crate) cron: String, // cron-parser
-    pub(crate) timeout_sec: Option<i32>,
-    pub(crate) started_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub(crate) finished_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub(crate) error_msg: Option<String>,
-}
-
-
-pub(crate) struct RpFnCtx {
-    pub(crate) fns: RpFn,
-
-}
-
-
 
 impl RpFn {
     /// topic starts with dot, means topic value required
@@ -295,83 +245,6 @@ impl RpFn {
     }
 
 }
-
-/// python module to import
-pub const POSTGRES_PY: &str = "psycopg2";
-
-pub const DB: &str = "DB";
-pub const TOPIC: &str = "TOPIC";
-pub const TABLE: &str = "TABLE";
-pub const TRIG: &str = "TRIG";
-
-impl PyContext {
-    /// create Python runtime and DB connection
-    #[inline]
-    pub(crate) fn new(f: &RpFn, db_url: &String) -> Result<PyContext, PyErr> {
-
-        let module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
-            Ok(PyModule::import(py, POSTGRES_PY)?.into())
-        })?;
-
-        // let libpq_kv = format!("host=localhost sslmode=disable user={} password={} dbname={}", username, password, db);
-        let client: PyObject = Python::with_gil(|py| -> PyResult<_> {
-            Ok(module.as_ref(py).getattr("connect")?.call1((db_url,))?.into())
-        })?;
-
-        Ok(PyContext {
-            py_rt: ManuallyDrop::new(module),
-            py_db: ManuallyDrop::new(client),
-            created: Instant::now(),
-        })
-    }
-
-
-
-    pub fn dict<'a>(&self, x: &'a RpFnLog, fc: &'a RpFn, py: Python<'a>) -> &'a PyDict {
-        let local = [
-            (DB, self.py_db.as_ref(py)),
-            // (TOPIC, fc.fns.topic.clone().into_py(py).as_ref(py)),
-            // (TABLE, fc.fns.schema_table.clone().into_py(py).as_ref(py)),
-            // (TRIG, x.trig_type.clone().into_py(py).as_ref(py)),
-        ].to_vec();
-        if let Some(pks) = &x.trig_value {
-            for (pk, pk_val) in pks.iter() {
-                // local.push((pk.to_ascii_uppercase().as_str(), pk_val.into_py(py).as_ref(py)));
-            }
-        }
-        local[..].into_py_dict(py)
-    }
-
-    pub(crate) fn invoke(&self, x: &RpFnLog, fc: &RpFn) -> Result<(), String> {
-
-        // pub fn invoke(&self, script: String,  fn_name: String,  table: String, env: HashMap<String, String>, pks: Vec<u64>) -> Result<(), String> {
-        Python::with_gil(|py| {
-            let mut locals = Vec::new();
-            if let Some(pks) = &x.trig_value {
-                for (pk, pk_val) in pks.iter() {
-                    locals.push((pk.to_ascii_uppercase(), pk_val.into_py(py)));
-                }
-            }
-            // println!("call with: {:?}", locals);
-            for i in locals.len()..3 { locals.push((format!("_nil{}", i), "".into_py(py))); } // to avoid out of index
-            let locals = [
-                (DB, self.py_db.as_ref(py)),
-                (TOPIC, fc.topic.clone().into_py(py).as_ref(py)),
-                (TABLE, fc.schema_table.clone().into_py(py).as_ref(py)),
-                (TRIG, x.trig_type.clone().into_py(py).as_ref(py)),
-                (locals[0].0.as_str(), locals[0].1.as_ref(py)), // TODO fix the reference problem self.dict()
-                (locals[1].0.as_str(), locals[1].1.as_ref(py)),
-                (locals[2].0.as_str(), locals[2].1.as_ref(py)),
-            ].into_py_dict(py);
-            let local = self.dict(x, fc, py);
-
-            py.run(fc.code.as_str(), None, Some(locals))
-        }).map_err(|e| format!("error on run [{}]: {}", fc.schema_table, e))
-
-    }
-
-}
-
 
 
 const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, finished_at, took_sec, error_msg from %SCHEMA%.rppd_function_log ";

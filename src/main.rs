@@ -23,6 +23,7 @@ mod rd_queue;
 mod py;
 
 mod rd_rpc;
+mod cron;
 
 use i18n_embed::{
 	fluent::{fluent_language_loader, FluentLanguageLoader},

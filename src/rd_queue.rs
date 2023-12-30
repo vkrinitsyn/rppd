@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use uuid::Uuid;
 use crate::rd_config::TopicDef;
-use crate::rd_fn::{PyCall, RpFnId, RpFnLog};
+use crate::rd_fn::{RpFnId, RpFnLog};
+use crate::py::PyCall;
 
 #[derive(Default, Debug, Clone)]
 pub(crate) struct QueueType (BTreeMap<i32, HashMap<TopicDef, VecDeque<PyCall>>>);

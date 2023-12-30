@@ -9,6 +9,7 @@ https://grpc.io/docs/protoc-installation/
 
 
 ### Build
+To build the project
 ```shell
 ./make.sh
 ```
@@ -22,7 +23,7 @@ IF
 
 Then (this takes time)
 ```shell
-cargo install cargo-pgrx
+cargo install cargo-pgrx --force
 cargo pgrx init 
 ```
 
