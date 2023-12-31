@@ -4,6 +4,7 @@ use pyo3::prelude::PyModule;
 use pyo3::{IntoPy, Py, PyErr, PyObject, PyResult, Python};
 use pyo3::types::{IntoPyDict, PyDict};
 use uuid::Uuid;
+use crate::rd_config::TIMEOUT_MS;
 use crate::rd_fn::{RpFn, RpFnLog};
 
 /// ManuallyDrop for PyModule and db: PyObject
@@ -11,6 +12,8 @@ pub struct PyContext {
     py_rt: ManuallyDrop<Py<PyModule>>,
     py_db: ManuallyDrop<PyObject>,
     created: Instant,
+    /// last tiem use
+    ltu: Instant,
 }
 
 
@@ -31,11 +34,10 @@ pub enum PyCall {
     /// scheduled local future call. this._fn must set
     Local(RpFnLog),
     /// to track a queue or able to return
-    InProgress(Uuid),
-    // to be removed by retain
-    // Taken,
+    // todo fn_log.id OR uuid, if not saved
+    InProgress(i64, Instant),
     /// host id for future use
-    Remote(i32, Uuid)
+    Remote(i32, i64)
 }
 
 
@@ -65,9 +67,14 @@ impl PyContext {
             py_rt: ManuallyDrop::new(module),
             py_db: ManuallyDrop::new(client),
             created: Instant::now(),
+            ltu: Instant::now(),
         })
     }
 
+    #[inline]
+    pub(crate) fn alive(&self) -> bool {
+        self.ltu.elapsed().as_millis() < TIMEOUT_MS as u128
+    }
 
 
     pub fn dict<'a>(&self, x: &'a RpFnLog, fc: &'a RpFn, py: Python<'a>) -> &'a PyDict {
@@ -85,7 +92,7 @@ impl PyContext {
         local[..].into_py_dict(py)
     }
 
-    pub(crate) fn invoke(&self, x: &RpFnLog, fc: &RpFn) -> Result<(), String> {
+    pub(crate) fn invoke(&mut self, x: &RpFnLog, fc: &RpFn) -> Result<(), String> {
 
         // pub fn invoke(&self, script: String,  fn_name: String,  table: String, env: HashMap<String, String>, pks: Vec<u64>) -> Result<(), String> {
         Python::with_gil(|py| {
@@ -108,7 +115,9 @@ impl PyContext {
             ].into_py_dict(py);
             let local = self.dict(x, fc, py);
 
-            py.run(fc.code.as_str(), None, Some(locals))
+            let res = py.run(fc.code.as_str(), None, Some(locals));
+            self.ltu = Instant::now();
+            res
         }).map_err(|e| format!("error on run [{}]: {}", fc.schema_table, e))
 
     }

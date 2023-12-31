@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::time::Instant;
 use uuid::Uuid;
+use crate::gen::rg::FnAction;
 use crate::rd_config::TopicDef;
 use crate::rd_fn::{RpFnId, RpFnLog};
 use crate::py::PyCall;
@@ -12,17 +14,17 @@ impl QueueType {
 // split into method for the unit testing
     #[inline]
     pub(crate) fn return_back(&mut self, l: RpFnLog, topic: TopicDef) {
-        if let Some(uid) = &l.uid {
+        // if let Some(uid) = &l.started {
             if let Some(f) = &l.fn_idp {
                 if let Some(queue) = self.0.get_mut(&f.priority) {
                     if let Some(line) = queue.get_mut(&topic) {
                         // call must be InProgress with uuid match
                         if let Some(x) = line.pop_back() {
                             match x {
-                                PyCall::InProgress(u) => {
-                                    if &u != uid {
+                                PyCall::InProgress(id, t) => {
+                                    // if &u != uid {
                                         // taken more than one events to execute from the same queue
-                                    } // else <- this is an expected only path!
+                                    // } // else <- this is an expected only path!
                                 }
                                 _ => { // if not or not match, return this back
                                     line.push_back(x);
@@ -33,7 +35,7 @@ impl QueueType {
                     } // all other conditions handle by q.put_one()
                 }
             }
-        }
+
     }
 
     /// build a queue
@@ -75,7 +77,7 @@ impl QueueType {
                 let calls = line.pop_back().unwrap();
                 if match &calls {
                     PyCall::Local(call) => false,
-                    PyCall::InProgress(_) => true,
+                    PyCall::InProgress(_, _) => true,
                     _ => {
                         break; // todo not defined yet for remote host execution
                     }
@@ -85,7 +87,7 @@ impl QueueType {
                 } else {
                     if let PyCall::Local(mut call) = calls {
                         if call.is_queue(false) {
-                            let py = PyCall::InProgress(call.uid.clone().unwrap_or(Uuid::new_v4()));
+                            let py = PyCall::InProgress(call.id, call.started.clone().unwrap_or(Instant::now()));
                             line.push_back(py);
                         }
                         result = Some(call.to_owned());
@@ -104,7 +106,36 @@ impl QueueType {
         result
     }
 
-    /// build a queue
+    /// state
+    #[inline]
+    pub(crate) async fn status(&self, fn_log_id: i64) -> FnAction {
+        for (k, v) in self.0.iter() {
+            for q in v.values() {
+                for c in q {
+                    match c {
+                        PyCall::Local(l) => {
+                            if l.id == fn_log_id {
+                                return FnAction::Queueing
+                            }
+                        }
+                        PyCall::InProgress(l, _) => {
+                            if *l == fn_log_id {
+                                return FnAction::InProgress
+                            }
+                        }
+                        PyCall::Remote(_n, l) => {
+                            if *l == fn_log_id {
+                                return FnAction::OnRemote
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        FnAction::Na
+    }
+
+    /// queued, in progress
     #[inline]
     pub(crate) fn size(&self) -> (usize, usize) {
         let mut cnt_l = 0usize;
@@ -114,7 +145,7 @@ impl QueueType {
                 for l in q {
                     match l {
                         PyCall::Local(_) => { cnt_l += 1; },
-                        PyCall::InProgress(_) => { cnt_i += 1; },
+                        PyCall::InProgress(_,_) => { cnt_i += 1; },
                         _ => {},
                     }
                 }
@@ -129,6 +160,8 @@ impl QueueType {
 #[cfg(test)]
 mod tests {
     #![allow(warnings, unused)]
+
+    use std::time::Instant;
     use super::*;
 
     #[tokio::test]
@@ -138,14 +171,14 @@ mod tests {
 
         let mut lines = HashMap::new();
         let mut line = VecDeque::new();
-        line.push_front(PyCall::InProgress(Uuid::new_v4()));
+        line.push_front(PyCall::InProgress(0, Instant::now()));
         lines.insert("".to_string(), line);
         q.0.insert(1, lines);
         assert!(q.pick_one().is_none());
 
         let mut lines = HashMap::new();
         let mut line = VecDeque::new();
-        line.push_front(PyCall::InProgress(Uuid::new_v4()));
+        line.push_front(PyCall::InProgress(0, Instant::now()));
         lines.insert("".to_string(), line);
         q.0.insert(1, lines);
         assert!(q.pick_one().is_none());

@@ -56,31 +56,35 @@ message EventResponse {
 enum FnAction {
 	// not found, might be completed and cleaned
 	NA = 0;
-	// executing
-	IN_PROGRESS = 1;
 	// recently done
-	COMPLETED_OK = 2;
-	// recently fail
-	FAIL = 3;
+	QUEUEING = 1;
+	// executing
+	IN_PROGRESS = 2;
+	// executing on remote
+	ON_REMOTE = 3;
 }
 
 message StatusRequest {
-	// master node id to check configuration consistency
-	int32 master = 1;
+	// node id to check configuration consistency
+	int32 node_id = 1;
 	// function status as id from rppd_fn_log
 	int64 fn_log_id = 2;
 
 }
 
 message StatusResponse {
+	// this node id
+	int32 node_id = 1;
 	// master node id to check configuration consistency
-	int32 master = 1;
-	// status of requested function
-	FnAction status = 2;
+	bool is_master = 2;
 	// total in queue
 	int32 queued = 3;
 	// total in progress
 	int32 in_proc = 4;
+	// total python to progress pooled connections
+	int32 pool = 5;
+	// status of requested function, NA=0 if no function requested
+	FnAction status = 6;
 }
 
 

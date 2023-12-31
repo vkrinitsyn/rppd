@@ -74,9 +74,9 @@ pub struct EventResponse {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StatusRequest {
-    /// master node id to check configuration consistency
+    /// node id to check configuration consistency
     #[prost(int32, tag = "1")]
-    pub master: i32,
+    pub node_id: i32,
     /// function status as id from rppd_fn_log
     #[prost(int64, tag = "2")]
     pub fn_log_id: i64,
@@ -85,18 +85,24 @@ pub struct StatusRequest {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StatusResponse {
-    /// master node id to check configuration consistency
+    /// this node id
     #[prost(int32, tag = "1")]
-    pub master: i32,
-    /// status of requested function
-    #[prost(enumeration = "FnAction", tag = "2")]
-    pub status: i32,
+    pub node_id: i32,
+    /// master node id to check configuration consistency
+    #[prost(bool, tag = "2")]
+    pub is_master: bool,
     /// total in queue
     #[prost(int32, tag = "3")]
     pub queued: i32,
     /// total in progress
     #[prost(int32, tag = "4")]
     pub in_proc: i32,
+    /// total python to progress pooled connections
+    #[prost(int32, tag = "5")]
+    pub pool: i32,
+    /// status of requested function, NA=0 if no function requested
+    #[prost(enumeration = "FnAction", tag = "6")]
+    pub status: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -164,12 +170,12 @@ impl PkColumnType {
 pub enum FnAction {
     /// not found, might be completed and cleaned
     Na = 0,
-    /// executing
-    InProgress = 1,
     /// recently done
-    CompletedOk = 2,
-    /// recently fail
-    Fail = 3,
+    Queueing = 1,
+    /// executing
+    InProgress = 2,
+    /// executing
+    OnRemote = 3,
 }
 impl FnAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -179,18 +185,18 @@ impl FnAction {
     pub fn as_str_name(&self) -> &'static str {
         match self {
             FnAction::Na => "NA",
+            FnAction::Queueing => "QUEUEING",
             FnAction::InProgress => "IN_PROGRESS",
-            FnAction::CompletedOk => "COMPLETED_OK",
-            FnAction::Fail => "FAIL",
+            FnAction::OnRemote => "ON_REMOTE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "NA" => Some(Self::Na),
+            "QUEUEING" => Some(Self::Queueing),
             "IN_PROGRESS" => Some(Self::InProgress),
-            "COMPLETED_OK" => Some(Self::CompletedOk),
-            "FAIL" => Some(Self::Fail),
+            "ON_REMOTE" => Some(Self::OnRemote),
             _ => None,
         }
     }

@@ -111,7 +111,7 @@ pub struct RpFnLog {
     /// schema.table (topic)
     pub(crate) fn_id: i32,
     #[sqlx(skip)] /// ID or uuid. Must set while queue executing
-    pub(crate) uid: Option<Uuid>,
+    pub(crate) started: Option<Instant>,
     #[sqlx(skip)] /// transient copy from RpFn
     pub(crate) fn_idp: Option<RpFnId>,
 
@@ -125,15 +125,13 @@ pub struct RpFnLog {
     pub(crate) error_msg: Option<String>,
 }
 
-pub(crate) const SELECT_CRON: &str = "select id, fn_id, cron, timeout_sec, started_at, finished_at, error_msg from %SCHEMA%.rppd_cron";
-
 impl Default for RpFnLog {
     fn default() -> Self {
         RpFnLog {
             id: 0,
             node_id: 0,
             fn_id: 0,
-            uid: None,
+            started: None,
             fn_idp: Some(RpFnId::default()),
             took_sec: 0,
             trig_value: None,

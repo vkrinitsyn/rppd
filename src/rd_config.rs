@@ -103,6 +103,8 @@ pub(crate) struct Cluster {
   pub(crate) max_db_connections: Arc<AtomicU16>,
   /// contents created
   pub(crate) max_context: Arc<AtomicU16>,
+  /// currently running functions
+  pub(crate) running: Arc<AtomicI32>,
 
   /// postgres connection pool use by sqlx on init
   pub(crate) db: Pool<Postgres>,
@@ -118,8 +120,6 @@ pub(crate) struct Cluster {
 
   /// common queue to trigger bg dispatcher
   pub(crate) sender: Sender<Option<RpFnLog>>,
-  // log.id might be unsaved
-  // queue: Arc<RwLock<VecDeque<RpFnLog>>>,
 
   /// Python functions execution by fn id
   /// internal fn topics and queues
@@ -131,7 +131,6 @@ pub(crate) struct Cluster {
   /// topic -> function id (priority)
   pub(crate) fn_id: Arc<RwLock<HashMap<TopicType, BTreeSet<RpFnId>>>>,
 
-  /// todo dispose when unused after while
   /// max is max_concurrent
   pub(crate) exec: Arc<RwLock<VecDeque<Mutex<PyContext>>>>,
 
@@ -277,16 +276,6 @@ impl Cluster {
     Ok(())
   }
 
-  /// load all or reload one or remove one schedules
-  #[inline]
-  pub(crate) async fn reload_crons(&self, x: &Option<EventRequest>) -> Result<(), String> {
-    let mut cl = sqlx::query_as::<_, RpFnCron>(SELECT_CRON.replace("%SCHEMA%", self.cfg.schema.as_str()).as_str())
-        .fetch_all(&self.db()).await.map_err(|e| e.to_string())?;
-    let mut crons = self.cron.write().await;
-    crons.clear();
-    crons.append(&mut cl);
-    Ok(())
-  }
 
   /// init
   pub(crate) async fn init(c: ArgConfig) -> Result<Self, String> {
@@ -331,6 +320,7 @@ impl Cluster {
       node_id: Arc::new(AtomicI32::new(id)),
       max_db_connections: Arc::new(AtomicU16::new(10)),
       max_context: Arc::new(AtomicU16::new(0)),
+      running: Arc::new(AtomicI32::new(0)),
       db: pool,
       nodes: Arc::new(RwLock::new(nodes)),
       node_connections: Arc::new(RwLock::new(node_connections)),
@@ -419,7 +409,7 @@ impl Cluster {
             finished_at: None,
             error_msg: None,
             fn_idp: None,
-            uid: None,
+            started: None,
           }, f.cleanup_logs_min, is_dot)
           );
         }
@@ -503,7 +493,8 @@ impl Cluster {
       self.queueing(l, false).await; // append loaded on startup
     }
 
-    let _ = self.reload_crons(&None).await?;
+    // let _ = self.reload_crons(&None).await?;
+    RpFnCron::load(&self.cfg.schema, self.db(), &mut *self.cron.write().await);
 
     // set STARTED
     self.started.store(true, Ordering::Relaxed);
@@ -518,6 +509,12 @@ impl Cluster {
     let f = match f {
       None => match self.queue.write().await.pick_one() {
           None => { // nothing to execute from topics or not ready as a queue
+            let mut rm = 0;
+            self.exec.write().await
+                .retain(|p| if let Ok(pp) = p.try_lock() { if pp.alive() {true} else { rm += 1; false} } else { true });
+            let max = self.max_context.load(Ordering::Relaxed);
+            let max = if max>rm {max - rm} else {0};
+            self.max_context.store(max, Ordering::Relaxed);
             return;
           }
           Some(f) => f
@@ -554,6 +551,7 @@ impl Cluster {
           }
           Some(p) => p
         };
+        self.running.fetch_add(1, Ordering::Relaxed);
 
         // thread this >
         let exec = self.exec.clone();
@@ -562,6 +560,7 @@ impl Cluster {
         let queue = self.sender.clone();
         let fc = fc.clone();
         let f = f.clone();
+        let run = self.running.clone();
         tokio::spawn(async move {
           let r = p.lock().await.invoke(&f, &fc);
 
@@ -572,50 +571,12 @@ impl Cluster {
                    });
           f.update(started.elapsed().as_secs(), r.err(), db, &schema).await;
           exec.write().await.push_front(p);
+          run.fetch_sub(1, Ordering::Relaxed);
           queue.send(None).await;
-          // Cluster::notify(queue).await;
         });
       }
     }
   }
-
-  /*
-  async fn notify(queue_priority: Sender<Option<RpFnLog>>) {
-
-    let s = {
-      let mut map = queue_priority.write().await;
-      loop {
-        let (s, rm) = match map.iter_mut().next() {
-          Some((k, v)) =>
-            if v.len() <= 1 {
-              (None, Some(k.clone()))
-            } else {
-              (v.pop_back(), None)
-            }
-          None => (None, None)
-        };
-        let s = match rm {
-          None => s,
-          Some(k) =>
-             match map.remove(&k) {
-                None => None,
-                Some(mut vv) => vv.pop_back()
-          }
-        };
-
-        if s.is_none() && map.len() > 0 {
-          continue
-        } else {
-          break s
-        }
-      }
-    };
-    if let Some(sender) = s {
-      sender.send(()).await;
-    }
-
-  }
-  */
 
 
   /// prepare to execute: put into queue or send to
@@ -628,7 +589,7 @@ impl Cluster {
 
     if push_back {
       let mut queues = self.queue.write().await;
-      match &l.uid {
+      match &l.started {
         None => queues.put_one(l, topic, fn_id, true),
         Some(_uid) => queues.return_back(l, topic)
       }
@@ -653,7 +614,11 @@ mod tests {
 
   #[tokio::test]
   async fn test_p() {
-
+    let mut cnt = 0;
+    let mut v = vec![1,2,3];
+    v.retain(|x| if *x>2 {true} else {cnt +=1; false});
+    assert_eq!(v, vec![3]);
+    assert_eq!(cnt, 2);
  }
 
 }

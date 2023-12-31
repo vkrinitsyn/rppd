@@ -14,7 +14,7 @@ use std::sync::{Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint};
-use crate::gen::rg::{DbAction, EventRequest, EventResponse, PkColumn, PkColumnType};
+use crate::gen::rg::{DbAction, EventRequest, EventResponse, PkColumn, PkColumnType, StatusRequest};
 use crate::gen::rg::grpc_client::GrpcClient;
 use crate::gen::rg::pk_column::PkValue::{BigintValue, IntValue};
 
@@ -223,6 +223,36 @@ fn call(event: EventRequest) -> Result<EventResponse, String> {
     })
 }
 
+
+/// input is host.id, output is json
+// #[pg_extern (name = "rppd_info", sql = "CREATE FUNCTION rppd_info(input text) RETURNS json LANGUAGE c AS 'MODULE_PATHNAME', 'rppd_info_wrapper';")]
+#[pg_extern]
+pub fn rppd_info(node_id: i32, fn_log_id: i64) -> String {
+    let client = CONFIG.server.clone();
+    let runtime = CONFIG.runtime.lock().unwrap();
+    let client = client.read().unwrap();
+    let r = runtime.block_on(async move {
+        match &*client {
+            Err(e) => Err(e.to_string()),
+            Ok(the_client) => {
+                let mut client = the_client.lock().await;
+                // DO a call:
+                client.status(tonic::Request::new(StatusRequest { node_id, fn_log_id })).await
+                    .map(|response| response.into_inner())
+                    .map_err(|e| e.message().to_string())
+            }
+        }
+    });
+
+    match r.map(|r| serde_json::to_string(&r)) {
+        Ok(r) => r.unwrap_or_else(|e| wrap_to_json(e.to_string())),
+        Err(e) => wrap_to_json(e)
+    }
+}
+
+fn wrap_to_json(input:String) -> String {
+    format!("{{ \"error\":\"{}\" }}", input)
+}
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_trigger]
