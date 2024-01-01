@@ -271,7 +271,7 @@ impl Cluster {
 
 
     }
-    self.fns.write().await.retain(|k, _v| !loaded.contains(&RpFnId{id: *k, queue: false, priority: 0}));
+    self.fns.write().await.retain(|k, _v| loaded.contains(&RpFnId{id: *k, queue: false, priority: 0}));
     println!("loaded {} function(s) for {} table(s) and {} topic(s)", self.fns.read().await.len(), self.fn_tt.read().await.len(), self.fn_id.read().await.len(), );
     Ok(())
   }

@@ -174,7 +174,7 @@ pub enum FnAction {
     Queueing = 1,
     /// executing
     InProgress = 2,
-    /// executing
+    /// executing on remote
     OnRemote = 3,
 }
 impl FnAction {

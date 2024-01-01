@@ -90,6 +90,10 @@ fn connect(host:&String) -> Result<GrpcClient<Channel>, String> {
     }
 }
 
+fn sql() -> String {
+    let schema = "public"; // TODO: use pgrx::pg_sys::GetConfigOptionByName
+    "SELECT host FROM %SCHEMA%.%CONFIG% where master".replace("%SCHEMA%", schema).replace("%CONFIG%", CONFIG_TABLE).to_string()
+}
 
 #[pg_trigger]
 fn rppd_event<'a>(
@@ -224,11 +228,29 @@ fn call(event: EventRequest) -> Result<EventResponse, String> {
 }
 
 
+
 /// input is host.id, output is json
 // #[pg_extern (name = "rppd_info", sql = "CREATE FUNCTION rppd_info(input text) RETURNS json LANGUAGE c AS 'MODULE_PATHNAME', 'rppd_info_wrapper';")]
 #[pg_extern]
 pub fn rppd_info(node_id: i32, fn_log_id: i64) -> String {
     let client = CONFIG.server.clone();
+    if client.read().unwrap().is_err() {
+        let host = match Spi::get_one::<String>(sql().as_str()) {
+            Ok(path) => path.unwrap_or("".to_string()),
+            Err(e) => {
+                return wrap_to_json(format!("{}\", \"sql\"=\"{},", e, sql()));
+            }
+        };
+        let client = connect(&host);
+        let mut server = CONFIG.server.write().unwrap();
+        *server = match client {
+            Ok(the_client) => Ok(tokio::sync::Mutex::new(the_client)),
+            Err(e) => {
+                return wrap_to_json(format!("{}\", \"server\"=\"{},", e, host))
+            }
+        };
+    }
+
     let runtime = CONFIG.runtime.lock().unwrap();
     let client = client.read().unwrap();
     let r = runtime.block_on(async move {
