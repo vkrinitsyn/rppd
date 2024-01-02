@@ -5,10 +5,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use chrono::Utc;
 use pyo3::prelude::PyModule;
 use pyo3::{IntoPy, Py, PyAny, PyErr, PyObject, PyResult, Python};
 use pyo3::types::{IntoPyDict, PyDict};
 use sqlx::{Pool, Postgres};
+use sqlx::types::Json;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use tonic::Status;
@@ -17,7 +19,7 @@ use crate::gen::rg::{event_request, EventRequest, PkColumn};
 use crate::py::PyCall;
 use crate::rd_config::{Cluster, TopicType};
 
-pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority from %SCHEMA%.rppd_function ";
+pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, verbose from %SCHEMA%.rppd_function ";
 
 /// Rust Python Function
 #[derive(sqlx::FromRow, PartialEq, Debug, Clone)]
@@ -32,6 +34,7 @@ pub struct RpFn {
     pub(crate) cleanup_logs_min: i32,
     /// queue priority
     pub(crate) priority: i32,
+    pub(crate) verbose: bool,
 }
 
 impl RpFnId {
@@ -40,6 +43,7 @@ impl RpFnId {
             id: f.id,
             queue: f.queue,
             priority: f.priority,
+            save: f.cleanup_logs_min > 0,
         }
     }
 }
@@ -49,6 +53,7 @@ pub struct RpFnId {
     pub(crate) id: i32,
     pub(crate) queue: bool,
     pub(crate) priority: i32,
+    pub(crate) save: bool,
 }
 
 
@@ -58,6 +63,7 @@ impl Default for RpFnId {
             id: 0,
             queue: false,
             priority: 0,
+            save: false,
         }
     }
 }
@@ -112,16 +118,18 @@ pub struct RpFnLog {
     pub(crate) fn_id: i32,
     #[sqlx(skip)] /// ID or uuid. Must set while queue executing
     pub(crate) started: Option<Instant>,
+    #[sqlx(skip)] /// ID or uuid. Must set while queue executing
+    pub(crate) uuid: Option<Uuid>,
     #[sqlx(skip)] /// transient copy from RpFn
     pub(crate) fn_idp: Option<RpFnId>,
 
-    pub(crate) took_sec: i32,
+    pub(crate) took_sec: Option<i32>,
 
     pub(crate) trig_value: Option<sqlx::types::Json<HashMap<String, String>>>,
 
     /// DbAction
     pub(crate) trig_type: i32,
-    pub(crate) finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) started_at: chrono::DateTime<chrono::Utc>,
     pub(crate) error_msg: Option<String>,
 }
 
@@ -132,11 +140,12 @@ impl Default for RpFnLog {
             node_id: 0,
             fn_id: 0,
             started: None,
+            uuid: None,
             fn_idp: Some(RpFnId::default()),
-            took_sec: 0,
+            took_sec: None,
             trig_value: None,
             trig_type: 0,
-            finished_at: None,
+            started_at: Utc::now(),
             error_msg: None,
         }
     }
@@ -242,10 +251,29 @@ impl RpFn {
         }
     }
 
+    pub(crate) fn err_msg(&self, err: PyErr, log: &RpFnLog) -> String {
+        let mut input =  String::new();
+        match &log.trig_value {
+            None => { input = "".to_string(); }
+            Some(map) => for (k,v) in map.0.iter() {
+                if input.len() > 0 {
+                    input.push_str(", ");
+                }
+                input.push_str(format!("{}={}", k, v).as_str());
+            }
+        };
+        let msg = if self.verbose {
+            format!("python:[\n{}\n] input: ({})", self.code, input)
+        } else {
+            "".to_string()
+        };
+        format!("error on run [{}]@{}: {} in {}", self.schema_table, self.topic, err, msg)
+    }
+
 }
 
 
-const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, finished_at, took_sec, error_msg from %SCHEMA%.rppd_function_log ";
+const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, started_at, took_sec, error_msg from %SCHEMA%.rppd_function_log ";
 
 const INSERT_LOG_V: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type, trig_value) values ($1, $2, $3, $4) returning id";
 const INSERT_LOG: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type) values ($1, $2, $3) returning id";
@@ -291,7 +319,7 @@ impl RpFnLog {
     #[inline]
     pub(crate) async fn update(&self, took: u64, r: Option<String>, db: Pool<Postgres>, schema: &String)  {
         if self.id == 0 { return; }
-        let sql = "update %SCHEMA%.rppd_function_log set finished_at = current_timestamp, took_sec = $1, error_msg = $2 where id = $3";
+        let sql = "update %SCHEMA%.rppd_function_log set took_sec = $1, error_msg = $2 where id = $3";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(took as i32)

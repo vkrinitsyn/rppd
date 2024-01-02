@@ -65,11 +65,28 @@ enum FnAction {
 }
 
 message StatusRequest {
-	// node id to check configuration consistency
+	// node id to check configuration consistency. Take it from rppd_config.id
 	int32 node_id = 1;
-	// function status as id from rppd_fn_log
-	int64 fn_log_id = 2;
+	// optional function status
+	oneof fn_log {
+		// function status as id from rppd_fn_log
+		int64 fn_log_id = 2;
+		// function status as uuid when not saved to rppd_fn_log
+		string uuid = 3;
+	}
 
+}
+
+message FnStatus {
+	oneof status {
+		uint32 queue_pos = 1;
+		uint32 in_proc_sec = 2;
+		int32 remote_host = 3;
+	}
+}
+
+message StatusFnsResponse {
+	repeated string uuid = 1;
 }
 
 message StatusResponse {
@@ -79,12 +96,15 @@ message StatusResponse {
 	bool is_master = 2;
 	// total in queue
 	int32 queued = 3;
-	// total in progress
+	// total in process
 	int32 in_proc = 4;
 	// total python to progress pooled connections
 	int32 pool = 5;
-	// status of requested function, NA=0 if no function requested
-	FnAction status = 6;
+	oneof fn_log {
+		// status of requested function, NA=0 if no function requested
+		FnStatus status = 6;
+		StatusFnsResponse uuid = 7;
+	}
 }
 
 

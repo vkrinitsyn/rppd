@@ -34,8 +34,8 @@ pub enum PyCall {
     /// scheduled local future call. this._fn must set
     Local(RpFnLog),
     /// to track a queue or able to return
-    // todo fn_log.id OR uuid, if not saved
-    InProgress(i64, Instant),
+    InProgressSaved(i64, Instant),
+    InProgressUnSaved(Uuid, Instant),
     /// host id for future use
     Remote(i32, i64)
 }
@@ -118,7 +118,7 @@ impl PyContext {
             let res = py.run(fc.code.as_str(), None, Some(locals));
             self.ltu = Instant::now();
             res
-        }).map_err(|e| format!("error on run [{}]: {}", fc.schema_table, e))
+        }).map_err(|e| fc.err_msg(e, x))
 
     }
 

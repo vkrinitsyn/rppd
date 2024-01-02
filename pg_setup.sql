@@ -29,7 +29,8 @@ CREATE table if not exists @extschema@.rppd_function (
     topic varchar(64) not null default '', -- ''
     priority int not null default 1,
     queue bool not null default true,
-    cleanup_logs_min int not null default 0
+    cleanup_logs_min int not null default 0,
+    verbose bool not null default false
 -- TODO wishes: sign, approve, cadence, env pass
 );
 
@@ -38,6 +39,7 @@ comment on column @extschema@.rppd_function.schema_table is 'The rppd_event() mu
 comment on column @extschema@.rppd_function.topic is '"": queue/topic per table (see schema_table); ".{column}": queue per value of the column "id" in this table, the value type must be int; "{any_name}": global queue i.e. multiple tables can share the same queue/topic';
 comment on column @extschema@.rppd_function.queue is 'if queue, then perform consequence events execution for the same topic. Ex: if the "topic" is ".id" and not queue, then events for same row will execute in parallel';
 comment on column @extschema@.rppd_function.cleanup_logs_min is 'Cleanup rppd_function_log after certain minutes,  Zero is not store logs to rppd_function_log';
+comment on column @extschema@.rppd_function.verbose is 'Provide extra log message on error';
 
 CREATE TRIGGER @extschema@_rppd_function_event AFTER INSERT OR UPDATE OR DELETE ON
     @extschema@.rppd_function FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
@@ -50,8 +52,8 @@ CREATE table if not exists @extschema@.rppd_function_log (
     fn_id int not null,
     trig_value json,
     trig_type int not null default 0,
-    finished_at timestamptz, -- not null default current_timestamp,
-    took_sec int not null default 0,
+    started_at timestamptz not null default current_timestamp,
+    took_sec int,
     error_msg text
 );
 
@@ -60,7 +62,7 @@ comment on column @extschema@.rppd_function_log.node_id is 'The rppd_config.id a
 comment on column @extschema@.rppd_function_log.fn_id is 'The rppd_function.id, but no FK to keep performance';
 comment on column @extschema@.rppd_function_log.trig_value is 'The value of column to trigger if topic is ".{column}". Use stored value to load on restore queue on startup and continue. Must be column type int to continue otherwise will save null and not able to restore.';
 comment on column @extschema@.rppd_function_log.trig_type is 'Type of event: Update = 0, Insert = 1, Delete = 2, Truncate = 3';
-comment on column @extschema@.rppd_function_log.finished_at is 'The rppd_function finushed or NULL if it is not';
+comment on column @extschema@.rppd_function_log.took_sec is 'The rppd_function running time or NULL if it is not finished';
 comment on column @extschema@.rppd_function_log.error_msg is 'The error indicator. Must be null if completed OK';
 
 
@@ -83,3 +85,7 @@ comment on column @extschema@.rppd_cron.finished_at is 'The function wont start 
 -- trigger a refresh
 CREATE TRIGGER @extschema@_rppd_cron_event AFTER INSERT OR UPDATE OR DELETE ON
     @extschema@.rppd_cron FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
+
+comment on function @extschema@.rppd_info(node_id integer) is 'Return node status in json format by node_id from rppd_config.id table';
+comment on function @extschema@.rppd_info(node_id integer, fn_log_id bigint) is 'Same as node status plus function execution status by fn_log.id table';
+comment on function @extschema@.rppd_info(node_id integer, fn_log_uuid text) is 'Same as node status plus function execution status by uuid if not store to fn_log.id table. use * to get all uuid.';

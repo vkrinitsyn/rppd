@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 use chrono::{format, Utc};
 use pgrx::{Json, PgTriggerError};
+use pgrx::pg_catalog::pg_proc::ProArgMode::In;
 use tonic::{Request, Response, Status};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -32,6 +33,7 @@ use crate::cron::RpFnCron;
 use crate::gen::rg::*;
 use crate::gen::rg::pk_column::PkValue;
 use crate::gen::rg::pk_column::PkValue::{BigintValue, IntValue};
+use crate::gen::rg::status_request::FnLog::FnLogId;
 use crate::py::PyContext;
 use crate::rd_fn::*;
 use crate::rd_queue::QueueType;
@@ -271,7 +273,7 @@ impl Cluster {
 
 
     }
-    self.fns.write().await.retain(|k, _v| loaded.contains(&RpFnId{id: *k, queue: false, priority: 0}));
+    self.fns.write().await.retain(|k, _v| loaded.contains(&RpFnId{id: *k, ..RpFnId::default()}));
     println!("loaded {} function(s) for {} table(s) and {} topic(s)", self.fns.read().await.len(), self.fn_tt.read().await.len(), self.fn_id.read().await.len(), );
     Ok(())
   }
@@ -403,13 +405,14 @@ impl Cluster {
             id: 0,
             node_id: node_id.clone(),
             fn_id: f.id,
-            took_sec: 0,
+            took_sec: None,
+            uuid: None,
             trig_type: r.event_type,
             trig_value: Some(sqlx::types::Json::from(trig_value.clone())),
-            finished_at: None,
+            started_at: Utc::now(),
             error_msg: None,
-            fn_idp: None,
-            started: None,
+            fn_idp: Some(RpFnId::fromf(f)),
+            started: Some(Instant::now()),
           }, f.cleanup_logs_min, is_dot)
           );
         }
@@ -438,7 +441,7 @@ impl Cluster {
         };
         res.push(RpFnLog {id: r, ..fl});
       } else {
-        res.push(fl);
+        res.push(RpFnLog {uuid: Some(Uuid::new_v4()), ..fl});
       };
     }
     Ok(ScheduleResult::Some(res))
@@ -488,7 +491,7 @@ impl Cluster {
 
     // load messages to internal queue from fn_log, check timeout and execution status,
     for l in sqlx::query_as::<_, RpFnLog>(
-      format!("{} where finished_at is null order by id", RpFnLog::select(&self.cfg.schema)).as_str())
+      format!("{} where took_sec is null order by id", RpFnLog::select(&self.cfg.schema)).as_str())
         .fetch_all(&self.db()).await.map_err(|e| e.to_string())? {
       self.queueing(l, false).await; // append loaded on startup
     }

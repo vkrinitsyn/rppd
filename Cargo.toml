@@ -2,7 +2,7 @@
 [package]
 name = "rppd"
 version = "0.1.2"
-authors = ["Vlad Krinitsyn <v.krinitsyn@gmail.com>"]
+authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2021"
 description = "RPPD inclusing Trigger for Postgres"
 

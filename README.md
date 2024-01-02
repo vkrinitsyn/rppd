@@ -17,6 +17,7 @@ To build the project
 
 ### FAQ
 > [!NOTE]
+reinstall
 
 IF
 > Mismatched rust versions: cargo-pgrx Mismatched rust versions: cargo-pgrx
@@ -50,8 +51,19 @@ cargo pgrx init
  - use PGPASSWORD env variable (or from file) to postgres connection
  - use PGUSER env variable (or read from file) to postgres connection
  - priority is: env (if used), if no use or not set, than app args param, than file, than default 
-3. Perform insert or update to configure a callback AND fire a function 
+3. Perform insert or update to configure a callback AND fire a function
 
+
+> [!NOTE]
+Use select the row by ID on INSERT trigger would fail because requested row might not visibly yet depends on transaction isolation. 
+The simple workaround is to sleep a second on Python function call.
+
+ 
+
+### Use to get more build in help:
+```sql
+psql> \df+ rppd*
+```
 
 ## Python samples
 
@@ -79,12 +91,6 @@ cur.execute("insert into test (b) values (%s)", ( "{}-{}".format(TOPIC, TRIG),))
 DB.commit()
 ```
 
-### python example2
-```python
-cur = DB.cursor()
-cur.execute("SELECT * FROM {} ".format(TABLE))
-print(cur.fetchall())
-```
 
 ### test example:
 ```sql
@@ -112,17 +118,15 @@ if len(input) > 0:
 ## TODO
 
 ### Core features and improvements 
-- Python function DB connection pool
 - Connect to multiple DB (rw/ro - replica)
 - Python function code sign, approve and verify on call
 - Monitoring cadence and hardware with email notification
+- Cleanup saved Python function logs
+- Test multiple nodes
 
 ### Cloud integration 
 - RESTapi/PubSub/ServiceBus to trigger events
 - OpenTelemetry logging integration like Appins  
 - Keyvault integration for a Database connections
 
-
-todo: test multiple nodes, save logs, restore incomplete functions
-todo impl: queue/topic, cleanup saved logs, add debug function
 

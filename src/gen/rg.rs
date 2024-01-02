@@ -74,12 +74,55 @@ pub struct EventResponse {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StatusRequest {
-    /// node id to check configuration consistency
+    /// node id to check configuration consistency. Take it from rppd_config.id
     #[prost(int32, tag = "1")]
     pub node_id: i32,
-    /// function status as id from rppd_fn_log
-    #[prost(int64, tag = "2")]
-    pub fn_log_id: i64,
+    /// optional function status
+    #[prost(oneof = "status_request::FnLog", tags = "2, 3")]
+    pub fn_log: ::core::option::Option<status_request::FnLog>,
+}
+/// Nested message and enum types in `StatusRequest`.
+pub mod status_request {
+    /// optional function status
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum FnLog {
+        /// function status as id from rppd_fn_log
+        #[prost(int64, tag = "2")]
+        FnLogId(i64),
+        /// function status as uuid when not saved to rppd_fn_log
+        #[prost(string, tag = "3")]
+        Uuid(::prost::alloc::string::String),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FnStatus {
+    #[prost(oneof = "fn_status::Status", tags = "1, 2, 3")]
+    pub status: ::core::option::Option<fn_status::Status>,
+}
+/// Nested message and enum types in `FnStatus`.
+pub mod fn_status {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Status {
+        #[prost(uint32, tag = "1")]
+        QueuePos(u32),
+        #[prost(uint32, tag = "2")]
+        InProcSec(u32),
+        #[prost(int32, tag = "3")]
+        RemoteHost(i32),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StatusFnsResponse {
+    #[prost(string, repeated, tag = "1")]
+    pub uuid: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -94,15 +137,27 @@ pub struct StatusResponse {
     /// total in queue
     #[prost(int32, tag = "3")]
     pub queued: i32,
-    /// total in progress
+    /// total in process
     #[prost(int32, tag = "4")]
     pub in_proc: i32,
     /// total python to progress pooled connections
     #[prost(int32, tag = "5")]
     pub pool: i32,
-    /// status of requested function, NA=0 if no function requested
-    #[prost(enumeration = "FnAction", tag = "6")]
-    pub status: i32,
+    #[prost(oneof = "status_response::FnLog", tags = "6, 7")]
+    pub fn_log: ::core::option::Option<status_response::FnLog>,
+}
+/// Nested message and enum types in `StatusResponse`.
+pub mod status_response {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum FnLog {
+        /// status of requested function, NA=0 if no function requested
+        #[prost(message, tag = "6")]
+        Status(super::FnStatus),
+        #[prost(message, tag = "7")]
+        Uuid(super::StatusFnsResponse),
+    }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
