@@ -1,14 +1,19 @@
 use sqlx::{Pool, Postgres};
-use tokio::sync::RwLockWriteGuard;
 
-pub(crate) const SELECT_CRON: &str = "select id, fn_id, cron, timeout_sec, started_at, finished_at, error_msg from %SCHEMA%.rppd_cron";
+pub(crate) const SELECT_CRON: &str = "select id, fn_id, cron, column_name, column_value, cadence, timeout_sec, started_at, finished_at, error_msg from %SCHEMA%.rppd_cron";
 
 /// Rust Python Function Cron
 #[derive(sqlx::FromRow, PartialEq, Debug, Clone)]
 pub struct RpFnCron {
     pub(crate) id: i64,
     pub(crate) fn_id: i32,
-    pub(crate) cron: String, // cron-parser
+    pub(crate) cron: String,
+    // cron-parser
+
+    pub(crate) column_name: String , // varchar(64) not null,
+    pub(crate) column_value: Option<String>,
+    pub(crate) cadence: bool, // not null default false,
+
     pub(crate) timeout_sec: Option<i32>,
     pub(crate) started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub(crate) finished_at: Option<chrono::DateTime<chrono::Utc>>,

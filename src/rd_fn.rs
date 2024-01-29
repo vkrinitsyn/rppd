@@ -1,21 +1,16 @@
 /*%LPH%*/
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::mem::ManuallyDrop;
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::Instant;
+
 use chrono::Utc;
-use pyo3::prelude::PyModule;
-use pyo3::{IntoPy, Py, PyAny, PyErr, PyObject, PyResult, Python};
-use pyo3::types::{IntoPyDict, PyDict};
+use pyo3::{IntoPy, PyErr};
+use pyo3::types::IntoPyDict;
 use sqlx::{Pool, Postgres};
-use sqlx::types::Json;
-use tokio::sync::RwLock;
-use tokio::sync::mpsc::Sender;
-use tonic::Status;
 use uuid::Uuid;
-use crate::gen::rg::{event_request, EventRequest, PkColumn};
+
+use crate::gen::rg::{event_request, EventRequest, pk_column, PkColumn};
 use crate::py::PyCall;
 use crate::rd_config::{Cluster, TopicType};
 
@@ -35,6 +30,8 @@ pub struct RpFn {
     /// queue priority
     pub(crate) priority: i32,
     pub(crate) verbose: bool,
+    // env json, -- TODO reserved for future usage: db pool (read only)/config python param name prefix (mapping)
+    // sign json -- TODO reserved for future usage: approve sign, required RSA private key on startup config
 }
 
 impl RpFnId {
@@ -86,9 +83,7 @@ impl Ord for RpFnId {
 
     #[inline]
     fn clamp(self, min: Self, max: Self) -> Self where Self: Sized, Self: PartialOrd {
-        if self.id < min.id { min }
-        else if self.id > max.id { max }
-        else { self }
+        if self.id < min.id { min } else if self.id > max.id { max } else { self }
     }
 }
 
@@ -106,7 +101,7 @@ impl PartialEq for RpFnId {
     }
 }
 
-impl Eq for RpFnId { }
+impl Eq for RpFnId {}
 
 /// Rust Python Function Log
 #[derive(sqlx::FromRow, PartialEq, Debug, Clone)]
@@ -162,7 +157,7 @@ impl RpFn {
     #[inline]
     pub(crate) fn to_pk_names(&self) -> HashSet<String> {
         let mut names = HashSet::new();
-        let n:Vec<&str> = self.topic.split(".").collect();
+        let n: Vec<&str> = self.topic.split(".").collect();
         for pk in n {
             if pk.len() > 0 {
                 names.insert(pk.to_string());
@@ -252,10 +247,10 @@ impl RpFn {
     }
 
     pub(crate) fn err_msg(&self, err: PyErr, log: &RpFnLog) -> String {
-        let mut input =  String::new();
+        let mut input = String::new();
         match &log.trig_value {
             None => { input = "".to_string(); }
-            Some(map) => for (k,v) in map.0.iter() {
+            Some(map) => for (k, v) in map.0.iter() {
                 if input.len() > 0 {
                     input.push_str(", ");
                 }
@@ -269,7 +264,6 @@ impl RpFn {
         };
         format!("error on run [{}]@{}: {} in {}", self.schema_table, self.topic, err, msg)
     }
-
 }
 
 
@@ -317,7 +311,7 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) async fn update(&self, took: u64, r: Option<String>, db: Pool<Postgres>, schema: &String)  {
+    pub(crate) async fn update(&self, took: u64, r: Option<String>, db: Pool<Postgres>, schema: &String) {
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set took_sec = $1, error_msg = $2 where id = $3";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
@@ -331,7 +325,7 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) async fn update_err(&self, r: String, db: Pool<Postgres>, schema: &String)  {
+    pub(crate) async fn update_err(&self, r: String, db: Pool<Postgres>, schema: &String) {
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set error_msg = $1 where id = $2";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
@@ -358,6 +352,33 @@ impl RpFnLog {
         line
     }
 
+    #[inline]
+    pub(crate) fn to_event(&self, table_name: String, node_id: i32) -> EventRequest {
+        let mut pks = Vec::new();
+        if let Some(val) = &self.trig_value {
+            for ((c, v)) in val.0.iter() {
+                let (column_type, pk_value) = match v.parse::<i32>() {
+                    Ok(v) => (0, Some(pk_column::PkValue::IntValue(v))),
+                    Err(_) => match v.parse::<i64>() {
+                        Ok(v) => (1, Some(pk_column::PkValue::BigintValue(v))),
+                        Err(_) => (0, None)
+                    }
+                };
+                pks.push(PkColumn {
+                    column_name: c.clone(),
+                    column_type,
+                    pk_value,
+                });
+            }
+        }
+        EventRequest {
+            table_name,
+            event_type: self.trig_type,
+            id_value: true,
+            pks,
+            optional_caller: Some(event_request::OptionalCaller::CallBy(node_id)),
+        }
+    }
 }
 
 #[inline]
@@ -381,7 +402,6 @@ fn esca(input: &String) -> String {
             x
         }
     }
-
 }
 
 #[cfg(test)]
@@ -389,8 +409,9 @@ mod tests {
     #![allow(warnings, unused)]
 
     use std::fs;
+
     use sqlx::postgres::PgPoolOptions;
-    use crate::rd_config::RpHost;
+
     use super::*;
 
     const DB_URL_FILE: &str = "test_db_url.local";
@@ -426,11 +447,11 @@ mod tests {
         v.insert("id".to_string(), "0".to_string());
         // v.insert("x".to_string(), "'0'".to_string());
         let id = sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&"public".to_string()).as_str())
-          .bind(0)
-          .bind(0)
-          .bind(0)
-          .bind(Some(sqlx::types::Json(v.clone())))
-          .fetch_one(&pool).await.map_err(|e| e.to_string())?;
+            .bind(0)
+            .bind(0)
+            .bind(0)
+            .bind(Some(sqlx::types::Json(v.clone())))
+            .fetch_one(&pool).await.map_err(|e| e.to_string())?;
 
         v.insert("id".to_string(), id.to_string());
         sqlx::query("update rppd_function_log set trig_value = $1 where id = $2")
@@ -449,7 +470,7 @@ mod tests {
         println!("{:?}", r);
 
         let r2 = sqlx::query_as::<_, RpFnLog>(format!("select * from rppd_function_log {} "
-            , r.select_sql("where")).as_str()) // instead of .bind()
+                                                      , r.select_sql("where")).as_str()) // instead of .bind()
             .fetch_one(&pool).await
             .map_err(|e| e.to_string())?;
 

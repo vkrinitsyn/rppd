@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
-use uuid::Uuid;
-use crate::gen::rg::{fn_status, FnAction, FnStatus, status_request, status_response, StatusFnsResponse};
+
+use crate::gen::rg::{fn_status, FnStatus, status_request, status_response, StatusFnsResponse};
 use crate::gen::rg::status_request::FnLog;
+use crate::py::PyCall;
 use crate::rd_config::TopicDef;
 use crate::rd_fn::{RpFnId, RpFnLog};
-use crate::py::PyCall;
 
 #[derive(Default, Debug, Clone)]
-pub(crate) struct QueueType (BTreeMap<i32, HashMap<TopicDef, VecDeque<PyCall>>>);
+pub(crate) struct QueueType(BTreeMap<i32, HashMap<TopicDef, VecDeque<PyCall>>>);
 
 impl QueueType {
     /// return back to the queue previously taken. uuid not set for topic event returning back
@@ -16,27 +16,26 @@ impl QueueType {
     #[inline]
     pub(crate) fn return_back(&mut self, l: RpFnLog, topic: TopicDef) {
         // if let Some(uid) = &l.started {
-            if let Some(f) = &l.fn_idp {
-                if let Some(queue) = self.0.get_mut(&f.priority) {
-                    if let Some(line) = queue.get_mut(&topic) {
-                        // call must be InProgress with uuid match
-                        if let Some(x) = line.pop_back() {
-                            match x {
-                                PyCall::InProgressSaved(id, t) => {
-                                    // if &u != uid {
-                                        // taken more than one events to execute from the same queue
-                                    // } // else <- this is an expected only path!
-                                }
-                                _ => { // if not or not match, return this back
-                                    line.push_back(x);
-                                }
+        if let Some(f) = &l.fn_idp {
+            if let Some(queue) = self.0.get_mut(&f.priority) {
+                if let Some(line) = queue.get_mut(&topic) {
+                    // call must be InProgress with uuid match
+                    if let Some(x) = line.pop_back() {
+                        match x {
+                            PyCall::InProgressSaved(id, t) => {
+                                // if &u != uid {
+                                // taken more than one events to execute from the same queue
+                                // } // else <- this is an expected only path!
                             }
-                            line.push_back(PyCall::Local(l));
+                            _ => { // if not or not match, return this back
+                                line.push_back(x);
+                            }
                         }
-                    } // all other conditions handle by q.put_one()
-                }
+                        line.push_back(PyCall::Local(l));
+                    }
+                } // all other conditions handle by q.put_one()
             }
-
+        }
     }
 
     /// build a queue
@@ -77,12 +76,8 @@ impl QueueType {
                 if line.is_empty() { continue; }
                 let calls = line.pop_back().unwrap();
                 if match &calls {
-                    PyCall::Local(call) => false,
-                    PyCall::InProgressSaved(_, _) |
-                    PyCall::InProgressUnSaved(_, _) => true,
-                    _ => {
-                        break; // todo not defined yet for remote host execution
-                    }
+                    PyCall::Local(_) => false,
+                    _ => true,
                 } {
                     line.push_back(calls); // return unchanged
                     break; // take next function topic
@@ -128,16 +123,16 @@ impl QueueType {
                             match &fn_log {
                                 status_request::FnLog::FnLogId(fn_log_id) => {
                                     if &l.id == fn_log_id {
-                                        return Some(status_response::FnLog::Status(FnStatus{status: Some(fn_status::Status::QueuePos(qq) )}));
+                                        return Some(status_response::FnLog::Status(FnStatus { status: Some(fn_status::Status::QueuePos(qq)) }));
                                     }
                                 }
                                 status_request::FnLog::Uuid(fn_log_uuid) => {
                                     if let Some(u) = &l.uuid {
                                         let u = u.to_string();
-                                        if fn_log_uuid.len() <= 3  {
+                                        if fn_log_uuid.len() <= 3 {
                                             uuid.push(u)
                                         } else if fn_log_uuid == &u {
-                                            return Some(status_response::FnLog::Status(FnStatus{status: Some(fn_status::Status::QueuePos(qq) )}));
+                                            return Some(status_response::FnLog::Status(FnStatus { status: Some(fn_status::Status::QueuePos(qq)) }));
                                         }
                                     }
                                 }
@@ -145,34 +140,37 @@ impl QueueType {
                         }
                         PyCall::InProgressSaved(l, u) => if let status_request::FnLog::FnLogId(fn_log_id) = &fn_log {
                             if l == fn_log_id {
-                                return Some(status_response::FnLog::Status(FnStatus{status: Some(fn_status::Status::InProcSec(u.elapsed().as_secs() as u32) )}));
+                                return Some(status_response::FnLog::Status(FnStatus { status: Some(fn_status::Status::InProcSec(u.elapsed().as_secs() as u32)) }));
                             }
                         }
                         PyCall::InProgressUnSaved(l, t) => if let status_request::FnLog::Uuid(fn_log_uuid) = &fn_log {
                             let u = fn_log_uuid.to_string();
-                            if fn_log_uuid.len() <= 3  {
+                            if fn_log_uuid.len() <= 3 {
                                 uuid.push(u)
                             } else if fn_log_uuid == &u {
-                                return Some(status_response::FnLog::Status(FnStatus{status: Some(fn_status::Status::InProcSec(t.elapsed().as_secs() as u32) )}));
+                                return Some(status_response::FnLog::Status(FnStatus { status: Some(fn_status::Status::InProcSec(t.elapsed().as_secs() as u32)) }));
                             }
                         }
-                        PyCall::Remote(n, l) => {
+                        PyCall::RemoteSaved(n, l) => {
                             match &fn_log {
                                 status_request::FnLog::FnLogId(fn_log_id) => {
                                     if l == fn_log_id {
-                                        return Some(status_response::FnLog::Status(FnStatus{status: Some(fn_status::Status::RemoteHost(*n) )}));
+                                        return Some(status_response::FnLog::Status(FnStatus { status: Some(fn_status::Status::RemoteHost(*n)) }));
                                     }
                                 }
-                                _=>{}
+                                _ => {}
                             }
+                        }
+                        PyCall::RemoteUnSaved(_, _) => {
+                            //
                         }
                     }
                 }
             }
         }
         match fn_log {
-            FnLog::FnLogId(_) => Some(status_response::FnLog::Status(FnStatus{status: None})),
-            FnLog::Uuid(_) => Some(status_response::FnLog::Uuid(StatusFnsResponse{ uuid }))
+            FnLog::FnLogId(_) => Some(status_response::FnLog::Status(FnStatus { status: None })),
+            FnLog::Uuid(_) => Some(status_response::FnLog::Uuid(StatusFnsResponse { uuid }))
         }
     }
 
@@ -185,9 +183,10 @@ impl QueueType {
             for q in v.values() {
                 for l in q {
                     match l {
-                        PyCall::Local(_) => { cnt_l += 1; },
-                        PyCall::InProgressSaved(_, _) => { cnt_i += 1; },
-                        _ => {},
+                        PyCall::Local(_) => { cnt_l += 1; }
+                        PyCall::InProgressSaved(_, _)
+                        | PyCall::InProgressUnSaved(_, _) => { cnt_i += 1; }
+                        _ => {}
                     }
                 }
             }
@@ -197,17 +196,17 @@ impl QueueType {
 }
 
 
-
 #[cfg(test)]
 mod tests {
     #![allow(warnings, unused)]
 
     use std::time::Instant;
+
     use super::*;
 
     #[tokio::test]
     async fn test_p() {
-        let mut q:QueueType = Default::default();
+        let mut q: QueueType = Default::default();
         assert!(q.pick_one().is_none());
 
         let mut lines = HashMap::new();
@@ -224,7 +223,7 @@ mod tests {
         q.0.insert(1, lines);
         assert!(q.pick_one().is_none());
 
-        q.put_one(RpFnLog::default(), "".to_string(),RpFnId::default(), false);
+        q.put_one(RpFnLog::default(), "".to_string(), RpFnId::default(), false);
         assert!(q.pick_one().is_some());
         assert!(q.pick_one().is_none());
 
@@ -234,10 +233,8 @@ mod tests {
         assert!(q.pick_one().is_some());
         assert!(q.pick_one().is_none());
 
-        q.put_one(RpFnLog::default(), "".to_string(),RpFnId::default(), false);
+        q.put_one(RpFnLog::default(), "".to_string(), RpFnId::default(), false);
         assert!(q.pick_one().is_some());
         assert!(q.pick_one().is_none());
-
     }
-
 }

@@ -1,9 +1,11 @@
 use std::mem::ManuallyDrop;
 use std::time::Instant;
-use pyo3::prelude::PyModule;
+
 use pyo3::{IntoPy, Py, PyErr, PyObject, PyResult, Python};
+use pyo3::prelude::PyModule;
 use pyo3::types::{IntoPyDict, PyDict};
 use uuid::Uuid;
+
 use crate::rd_config::TIMEOUT_MS;
 use crate::rd_fn::{RpFn, RpFnLog};
 
@@ -28,16 +30,18 @@ impl Drop for PyContext {
     }
 }
 
-
+/// Queue configuration
 #[derive(Debug, Clone)]
 pub enum PyCall {
     /// scheduled local future call. this._fn must set
     Local(RpFnLog),
     /// to track a queue or able to return
     InProgressSaved(i64, Instant),
+    /// if the fn exec progress not logged, than on master change the queue will lost
     InProgressUnSaved(Uuid, Instant),
     /// host id for future use
-    Remote(i32, i64)
+    RemoteSaved(i32, i64),
+    RemoteUnSaved(i32, Uuid),
 }
 
 
@@ -53,14 +57,13 @@ impl PyContext {
     /// create Python runtime and DB connection
     #[inline]
     pub(crate) fn new(f: &RpFn, db_url: &String) -> Result<PyContext, PyErr> {
-
         let module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
             Ok(PyModule::import(py, POSTGRES_PY)?.into())
         })?;
 
         // let libpq_kv = format!("host=localhost sslmode=disable user={} password={} dbname={}", username, password, db);
         let client: PyObject = Python::with_gil(|py| -> PyResult<_> {
-            Ok(module.as_ref(py).getattr("connect")?.call1((db_url,))?.into())
+            Ok(module.as_ref(py).getattr("connect")?.call1((db_url, ))?.into())
         })?;
 
         Ok(PyContext {
@@ -78,7 +81,7 @@ impl PyContext {
 
 
     pub fn dict<'a>(&self, x: &'a RpFnLog, fc: &'a RpFn, py: Python<'a>) -> &'a PyDict {
-        let local = [
+        let mut local = [
             (DB, self.py_db.as_ref(py)),
             // (TOPIC, fc.fns.topic.clone().into_py(py).as_ref(py)),
             // (TABLE, fc.fns.schema_table.clone().into_py(py).as_ref(py)),
@@ -113,14 +116,13 @@ impl PyContext {
                 (locals[1].0.as_str(), locals[1].1.as_ref(py)),
                 (locals[2].0.as_str(), locals[2].1.as_ref(py)),
             ].into_py_dict(py);
+
             let local = self.dict(x, fc, py);
 
             let res = py.run(fc.code.as_str(), None, Some(locals));
             self.ltu = Instant::now();
             res
         }).map_err(|e| fc.err_msg(e, x))
-
     }
-
 }
 

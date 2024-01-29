@@ -1,16 +1,14 @@
 /*%LPH%*/
 
-use std::collections::{BTreeMap, HashMap};
 use std::{env, fs};
-use std::env::Args;
-use std::fmt::{Display};
+use std::collections::HashMap;
+use std::fmt::Display;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Error, ErrorKind};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::time::Duration;
+
 // use ytcc::{ClusterConfigNames, DEFAULT_SCHEMA};
 use crate::fl;
-
 
 /// DEFAULT_SCHEMA_TABLEe: ytcc::DEFAULT_SCHEMA . ytcc::DEFAULT_TABLE)
 // pub const DEFAULT_DB_URL: &str = "postgresql://postgres@postgres?host=/var/run/postgresql";
@@ -69,24 +67,24 @@ pub struct ArgConfig {
 }
 
 impl Default for ArgConfig {
-	fn default() -> Self {
-		let user = match std::env::var_os("PGUSER") {
+    fn default() -> Self {
+        let user = match std::env::var_os("PGUSER") {
             Some(a) => a.to_str().unwrap_or("postgres").to_string(),
             _ => match std::env::var_os("USER") {
                 Some(a) => a.to_str().unwrap_or("postgres").to_string(),
                 _ => "postgres".to_string(),
             }
         };
-		let pwd = match std::env::var_os("PGPASSWORD") {
+        let pwd = match std::env::var_os("PGPASSWORD") {
             Some(a) => a.to_str().unwrap_or("").to_string(),
             _ => "".to_string(),
         };
-		let this = match std::env::var_os("HOSTNAME") {
+        let this = match std::env::var_os("HOSTNAME") {
             Some(a) => a.to_str().unwrap_or(LOCALHOST).to_string(),
             _ => fs::read_to_string("/etc/hostname").unwrap_or(LOCALHOST.to_string()),
         };
 
-	    ArgConfig {
+        ArgConfig {
             this,
             db_url: DEFAULT_DB_URL.replace("$USER", user.as_str()),
             user,
@@ -98,18 +96,18 @@ impl Default for ArgConfig {
             max_queue_size: ArgConfig::max_queue_size(),
             force_master: false,
         }
-	}
+    }
 }
 
 impl Display for ArgConfig {
-	#[inline(always)]
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-		writeln!(f, "db: {}", self.db_url)?;
+    #[inline(always)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        writeln!(f, "db: {}", self.db_url)?;
         if let Some(fl) = &self.file {
             writeln!(f, "config: {}", fl)?;
         }
-		Ok(())
-	}
+        Ok(())
+    }
 }
 
 impl ArgConfig {
@@ -156,16 +154,16 @@ impl ArgConfig {
                 } else if input[i].starts_with("--force_master=") {
                     force_master = input[i].ends_with("=true") || input[i].ends_with("=yes");
                 } else if input[i].starts_with("--name=") {
-                    let v:Vec<&str> = input[i].split("=").collect();
-                    if v.len()>1 { this = v[1].to_string(); }
+                    let v: Vec<&str> = input[i].split("=").collect();
+                    if v.len() > 1 { this = v[1].to_string(); }
                 } else if let Some(v) = ArgConfig::try_parse_cfg(&input[i], &cfg, ":", BIND) {
                     let b: Vec<&str> = v.split(":").collect();
                     bind = b[0].to_string();
                     match b[1].parse::<u16>() {
-                        Ok(v) => { port = v; },
+                        Ok(v) => { port = v; }
                         Err(e) => {
                             return Err(fl!("err-wrong-port-format", string = e.to_string(), value = v));
-                        },
+                        }
                     }
                 } else if let Some(v) = ArgConfig::try_parse_cfg(&input[i], &cfg, "", SCHEMA) {
                     let s: Vec<&str> = v.split(".").collect();
@@ -258,7 +256,7 @@ impl ArgConfig {
     }
 
     pub(crate) fn db_url(&self) -> String {
-        let urls:Vec<&str> = self.db_url.split("@").collect();
+        let urls: Vec<&str> = self.db_url.split("@").collect();
         format!("postgres://{}:{}@{}", self.user, self.pwd, urls[urls.len() - 1])
     }
 }
@@ -266,11 +264,11 @@ impl ArgConfig {
 #[allow(warnings)]
 #[cfg(test)]
 mod tests {
-    use std::{fs};
-    use std::process::Command;
-    use tokio::io::AsyncReadExt;
-    use super::*;
+    use std::fs;
+
     use uuid::Uuid;
+
+    use super::*;
 
     #[inline]
     fn uuid() -> String {
@@ -342,9 +340,9 @@ mod tests {
         assert_eq!(format!("s.{}", CFG_TABLE),
                    ArgConfig::parse_table_name(&"".to_string(), &"s.".to_string()));
         assert_eq!(format!("{}.t", DEFAULT_SCHEMA),
-            ArgConfig::parse_table_name(&"".to_string(), &".t".to_string()));
+                   ArgConfig::parse_table_name(&"".to_string(), &".t".to_string()));
         assert_eq!(format!("{}.t", DEFAULT_SCHEMA),
-            ArgConfig::parse_table_name(&"".to_string(), &"t".to_string()));
+                   ArgConfig::parse_table_name(&"".to_string(), &"t".to_string()));
     }
 
     #[test]
@@ -354,5 +352,4 @@ mod tests {
         let ipsd: Vec<std::net::IpAddr> = dns_lookup::lookup_host("127.0.0.1").unwrap();
         assert_eq!(ipsd.len(), 1);
     }
-
 }

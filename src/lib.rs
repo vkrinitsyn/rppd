@@ -1,24 +1,26 @@
 /*%LPH%*/
 
 
-mod gen;
-
 use std::str::FromStr;
+use std::sync::{Mutex, RwLock};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
 use once_cell::sync::Lazy;
 use pgrx::*;
 use pgrx::prelude::*;
+use pgrx::spi::SpiError;
 use pgrx::WhoAllocated;
 use tokio::runtime::{Builder, Runtime};
-use std::sync::{Mutex, RwLock};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-use pgrx::spi::SpiError;
 use tonic::transport::{Channel, Endpoint};
+
 use crate::gen::rg::{DbAction, EventRequest, EventResponse, PkColumn, PkColumnType, StatusRequest};
 use crate::gen::rg::grpc_client::GrpcClient;
 use crate::gen::rg::pk_column::PkValue::{BigintValue, IntValue};
 use crate::gen::rg::status_request::FnLog;
+
+mod gen;
 
 pgrx::pg_module_magic!();
 
@@ -73,7 +75,7 @@ impl MetaConfig {
     }
 }
 
-fn connect(host:&String) -> Result<GrpcClient<Channel>, String> {
+fn connect(host: &String) -> Result<GrpcClient<Channel>, String> {
     let path = format!("http://{}", host);
     // pgrx::warning!("connecting to: {}", path);
     match CONFIG.runtime.lock() {
@@ -116,26 +118,26 @@ fn rppd_event<'a>(
     let table_name = trigger.table_name().unwrap_or("".into());
     let not_loaded = !CONFIG.loaded.load(Ordering::Relaxed);
     let cfg_table = table_name.as_str() == CONFIG_TABLE
-            && current.get_by_name::<bool>("master")
-            .map_err(|_e| PgTriggerError::NullTriggerData)?.unwrap_or(false);
+        && current.get_by_name::<bool>("master")
+        .map_err(|_e| PgTriggerError::NullTriggerData)?.unwrap_or(false);
     if not_loaded || cfg_table {
         let host = if cfg_table {
             let host = current.get_by_name::<String>("host")
                 .map_err(|_e| PgTriggerError::NullTriggerData)?.unwrap_or("".into());
             if host.contains(":") {
-                    host
-                } else {
-                    format!("{}:8881", host)
-                }
-            } else if not_loaded { // do not load from the table event triggered - there will be a deadlock
-                match Spi::get_one::<String>("SELECT host FROM rppd_config where master") {
-                    Ok(path) => path.unwrap_or("".to_string()),
-                    Err(e) => {
-                        pgrx::warning!("error loading host: {}", e);
-                        return Err(PgTriggerError::InvalidPgTriggerWhen(1));
-                    }
-                }
+                host
             } else {
+                format!("{}:8881", host)
+            }
+        } else if not_loaded { // do not load from the table event triggered - there will be a deadlock
+            match Spi::get_one::<String>("SELECT host FROM rppd_config where master") {
+                Ok(path) => path.unwrap_or("".to_string()),
+                Err(e) => {
+                    pgrx::warning!("error loading host: {}", e);
+                    return Err(PgTriggerError::InvalidPgTriggerWhen(1));
+                }
+            }
+        } else {
             CONFIG.server_path.read().unwrap().clone()
         };
 
@@ -230,25 +232,36 @@ fn call(event: EventRequest) -> Result<EventResponse, String> {
 }
 
 
+/// output is json
+#[pg_extern(name = "rppd_info")]
+pub fn rppd_info_master() -> String {
+    rppd_info_impl(StatusRequest { node_id: -1, fn_log: None })
+}
 
 /// input is host.id, output is json
-#[pg_extern (name = "rppd_info")]
+#[pg_extern(name = "rppd_info")]
 pub fn rppd_info_host(node_id: i32) -> String {
     rppd_info_impl(StatusRequest { node_id, fn_log: None })
 }
 
-#[pg_extern (name = "rppd_info")]
+#[pg_extern(name = "rppd_info")]
 pub fn rppd_info_id(node_id: i32, fn_log_id: i64) -> String {
-    rppd_info_impl(StatusRequest { node_id, fn_log: Some(
-        FnLog::FnLogId(fn_log_id)
-    ) })
+    rppd_info_impl(StatusRequest {
+        node_id,
+        fn_log: Some(
+            FnLog::FnLogId(fn_log_id)
+        ),
+    })
 }
 
-#[pg_extern (name = "rppd_info")]
+#[pg_extern(name = "rppd_info")]
 pub fn rppd_info_uuid(node_id: i32, fn_log_uuid: String) -> String {
-    rppd_info_impl(StatusRequest { node_id, fn_log: Some(
-        FnLog::Uuid(fn_log_uuid)
-    ) })
+    rppd_info_impl(StatusRequest {
+        node_id,
+        fn_log: Some(
+            FnLog::Uuid(fn_log_uuid)
+        ),
+    })
 }
 
 /// input is host.id, output is json
@@ -270,7 +283,7 @@ pub fn rppd_info_impl(input: StatusRequest) -> String {
         *server = match client {
             Ok(the_client) => Ok(tokio::sync::Mutex::new(the_client)),
             Err(e) => {
-                return wrap_to_json(format!("{}\", \"server\"=\"{}", e, host))
+                return wrap_to_json(format!("{}\", \"server\"=\"{}", e, host));
             }
         };
     }
@@ -296,10 +309,9 @@ pub fn rppd_info_impl(input: StatusRequest) -> String {
     }
 }
 
-fn wrap_to_json(input:String) -> String {
+fn wrap_to_json(input: String) -> String {
     format!("{{ \"error\":\"{}\" }}", input)
 }
-
 
 
 #[cfg(any(test, feature = "pg_test"))]

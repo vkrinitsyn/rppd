@@ -107,6 +107,14 @@ message StatusResponse {
 	}
 }
 
+message SwitchRequest {
+	// master node ID to switch from
+	int32 node_id = 1;
+}
+
+message SwitchResponse {
+
+}
 
 //The GRPC service
 service Grpc {
@@ -115,5 +123,11 @@ service Grpc {
 
   // call between nodes
 	rpc status(StatusRequest) returns (StatusResponse) {}
+
+  // call from node to master to mark the function event completed
+	rpc complete(StatusRequest) returns (SwitchResponse) {}
+
+  // call from master to nodes to switch it to master on current master shutdown
+	rpc switch(SwitchRequest) returns (SwitchResponse) {}
 
 }

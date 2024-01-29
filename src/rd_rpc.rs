@@ -1,17 +1,14 @@
 use std::sync::atomic::Ordering;
+
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
-use tonic::transport::Channel;
+
 use crate::arg_config::{CFG_CRON_TABLE, CFG_FN_TABLE, CFG_TABLE};
 use crate::cron::RpFnCron;
-use crate::gen::rg::{EventRequest, EventResponse, FnAction, PkColumn, StatusRequest, StatusResponse};
-use crate::gen::rg::grpc_client::GrpcClient;
+use crate::gen::rg::{EventRequest, EventResponse, PkColumn, StatusRequest, StatusResponse, SwitchRequest, SwitchResponse};
 use crate::gen::rg::grpc_server::Grpc;
-use crate::gen::rg::status_request::FnLog;
 use crate::rd_config::Cluster;
 use crate::rd_fn::RpFnLog;
-
 
 pub(crate) enum ScheduleResult {
     // no need schedule
@@ -19,16 +16,15 @@ pub(crate) enum ScheduleResult {
     // Ok
     Some(Vec<RpFnLog>),
     // repeat a call with column name
-    Repeat(Vec<PkColumn>)
+    Repeat(Vec<PkColumn>),
 }
 
 #[async_trait]
 impl Grpc for Cluster {
-
     async fn event(&self, request: Request<EventRequest>) -> Result<Response<EventResponse>, Status> {
         let request = request.into_inner();
         if request.optional_caller.is_some() && self.master.load(Ordering::Relaxed) {
-            return Ok(Response::new(EventResponse{ saved: false, repeat_with: vec![] })); // no reverse call from host to master
+            return Ok(Response::new(EventResponse { saved: false, repeat_with: vec![] })); // no reverse call from host to master
         }
 
         if !self.started.load(Ordering::Relaxed) {
@@ -55,7 +51,7 @@ impl Grpc for Cluster {
             }
             ScheduleResult::Repeat(repeat_with) => {
                 println!("re-requesting to repeat: {:?}", repeat_with);
-                return Ok(Response::new(EventResponse{ saved: false, repeat_with }));
+                return Ok(Response::new(EventResponse { saved: false, repeat_with }));
             }
         }
 
@@ -79,7 +75,7 @@ impl Grpc for Cluster {
             }
         }
 
-        Ok(Response::new(EventResponse{ saved: true,  repeat_with: vec![] }))
+        Ok(Response::new(EventResponse { saved: true, repeat_with: vec![] }))
     }
 
     async fn status(&self, request: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
@@ -87,8 +83,9 @@ impl Grpc for Cluster {
         if !self.started.load(Ordering::Relaxed) {
             Err(Status::unavailable("starting"))
         } else {
-
-            if r.node_id == self.node_id.load(Ordering::Relaxed) {
+            if r.node_id == self.node_id.load(Ordering::Relaxed)
+                || (r.node_id < 0 && !self.node_connections.read().await.contains_key(&r.node_id))
+            {
                 let pool = self.exec.read().await.len() as i32;
                 let is_master = self.master.load(Ordering::Relaxed);
                 let queue = self.queue.read().await;
@@ -99,9 +96,8 @@ impl Grpc for Cluster {
                     in_proc: in_proc as i32,
                     fn_log: queue.status(r.fn_log).await,
                     pool,
-                    is_master
-                } ))
-
+                    is_master,
+                }))
             } else { // do call to the node
                 if let Some(node) = self.node_connections.read().await.get(&r.node_id) {
                     match node {
@@ -113,6 +109,24 @@ impl Grpc for Cluster {
                 }
             }
         }
+    }
+
+    ///
+    async fn complete(&self, request: Request<StatusRequest>) -> Result<Response<SwitchResponse>, Status> {
+        let _r = request.into_inner();
+        self.sender.send(None).await;
+        Ok(Response::new(SwitchResponse {}))
+    }
+
+    async fn switch(&self, request: Request<SwitchRequest>) -> Result<Response<SwitchResponse>, Status> {
+        if !self.master.load(Ordering::Relaxed) {
+            let ctx = self.clone();
+            let master = request.into_inner();
+            tokio::spawn(async move {
+                ctx.become_master(Some(master.node_id)).await;
+            });
+        }
+        Ok(Response::new(SwitchResponse {}))
     }
 }
 

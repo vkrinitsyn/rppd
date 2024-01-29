@@ -160,6 +160,18 @@ pub mod status_response {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SwitchRequest {
+    /// master node ID to switch from
+    #[prost(int32, tag = "1")]
+    pub node_id: i32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SwitchResponse {}
+#[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum DbAction {
@@ -382,6 +394,46 @@ pub mod grpc_client {
             req.extensions_mut().insert(GrpcMethod::new("rg.Grpc", "status"));
             self.inner.unary(req, path, codec).await
         }
+        /// call from node to master to mark the function event completed
+        pub async fn complete(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StatusRequest>,
+        ) -> std::result::Result<tonic::Response<super::SwitchResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/rg.Grpc/complete");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("rg.Grpc", "complete"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// call from master to nodes to switch it to master on current master shutdown
+        pub async fn switch(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SwitchRequest>,
+        ) -> std::result::Result<tonic::Response<super::SwitchResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/rg.Grpc/switch");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("rg.Grpc", "switch"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -401,6 +453,16 @@ pub mod grpc_server {
             &self,
             request: tonic::Request<super::StatusRequest>,
         ) -> std::result::Result<tonic::Response<super::StatusResponse>, tonic::Status>;
+        /// call from node to master to mark the function event completed
+        async fn complete(
+            &self,
+            request: tonic::Request<super::StatusRequest>,
+        ) -> std::result::Result<tonic::Response<super::SwitchResponse>, tonic::Status>;
+        /// call from master to nodes to switch it to master on current master shutdown
+        async fn switch(
+            &self,
+            request: tonic::Request<super::SwitchRequest>,
+        ) -> std::result::Result<tonic::Response<super::SwitchResponse>, tonic::Status>;
     }
     /// The GRPC service
     #[derive(Debug)]
@@ -555,6 +617,94 @@ pub mod grpc_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = statusSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rg.Grpc/complete" => {
+                    #[allow(non_camel_case_types)]
+                    struct completeSvc<T: Grpc>(pub Arc<T>);
+                    impl<T: Grpc> tonic::server::UnaryService<super::StatusRequest>
+                    for completeSvc<T> {
+                        type Response = super::SwitchResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::StatusRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Grpc>::complete(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = completeSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rg.Grpc/switch" => {
+                    #[allow(non_camel_case_types)]
+                    struct switchSvc<T: Grpc>(pub Arc<T>);
+                    impl<T: Grpc> tonic::server::UnaryService<super::SwitchRequest>
+                    for switchSvc<T> {
+                        type Response = super::SwitchResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SwitchRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Grpc>::switch(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = switchSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -12,3 +12,5 @@ err-wrong-argument = "Wrong {$string}"
 error = Error
 err-wrong-port-format = Wrong port format: {$value} {$string}
 err-wrong-schema-format = Wrong schema format: {$string}
+
+rppd-switch = Been transfering master node from self(ID={$from}) to ID={$to}:

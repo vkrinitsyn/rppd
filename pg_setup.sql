@@ -8,7 +8,7 @@ CREATE table if not exists @extschema@.rppd_config (
     active_since timestamptz default current_timestamp,
     max_db_connections int not null default 10,
     master bool unique
---  db pool/config name
+
 );
 comment on table @extschema@.rppd_config is 'App nodes host binding, master host flag. If added by someone, will notify all others';
 comment on column @extschema@.rppd_config.active_since is 'The NULL or future value indicate incative nodes';
@@ -30,9 +30,12 @@ CREATE table if not exists @extschema@.rppd_function (
     priority int not null default 1,
     queue bool not null default true,
     cleanup_logs_min int not null default 0,
-    verbose bool not null default false
--- TODO wishes: sign, approve, cadence, env pass
+    verbose bool not null default false,
+    env json, -- reserved for future usage: db pool (read only)/config python param name prefix (mapping)
+    sign json -- reserved for future usage: approve sign
 );
+
+select nextval('rppd_function_log_id_seq'::regclass); -- start log id from above 0, see ".id > 0"
 
 comment on table @extschema@.rppd_function is 'Python function code, linked table and topic. If modify, than the cache will be refreshed. Functions triggered for same topic OR table i.e. many fn per event will order by id.';
 comment on column @extschema@.rppd_function.schema_table is 'The rppd_event() must trigger on the corresponding "schema_table" to fire the function, see topic to identify execution order';
@@ -57,7 +60,7 @@ CREATE table if not exists @extschema@.rppd_function_log (
     error_msg text
 );
 
-comment on table @extschema@.rppd_function_log is 'Python function code execution on app nodes';
+comment on table @extschema@.rppd_function_log is 'Python function code execution results for a tracking consistency, durability and cadence';
 comment on column @extschema@.rppd_function_log.node_id is 'The rppd_config.id as a reference to execution node';
 comment on column @extschema@.rppd_function_log.fn_id is 'The rppd_function.id, but no FK to keep performance';
 comment on column @extschema@.rppd_function_log.trig_value is 'The value of column to trigger if topic is ".{column}". Use stored value to load on restore queue on startup and continue. Must be column type int to continue otherwise will save null and not able to restore.';
@@ -71,15 +74,21 @@ CREATE table if not exists @extschema@.rppd_cron (
     id serial primary key,
     fn_id int not null,
     cron varchar(64) not null,
+    column_name varchar(64) not null,
+    column_value text,
+    cadence bool not null default false,
     timeout_sec int,
     finished_at timestamptz,
     started_at timestamptz,
     error_msg text
 );
 
-comment on table @extschema@.rppd_cron is 'Periodic schedule';
+comment on table @extschema@.rppd_cron is 'Periodic function python trigger schedule and cadence';
 comment on column @extschema@.rppd_cron.fn_id is 'The table reference to the function configuration. The topic in this function must be a column to increment on periodic event fire';
 comment on column @extschema@.rppd_cron.cron is 'The schedule see https://en.wikipedia.org/wiki/Cron , Please adjust timeout accordingly.';
+comment on column @extschema@.rppd_cron.column_name is 'The column in target table to update';
+comment on column @extschema@.rppd_cron.column_value is 'The column SQL value in target table to update';
+comment on column @extschema@.rppd_cron.cadence is 'The flag indicate to run this cron job only if the function was not started by cron defined. Required a rppd_function_log i.e. cleanup_logs_min > 0';
 comment on column @extschema@.rppd_cron.finished_at is 'The function wont start if finished_at is null. If started_at is null, the function never started yet';
 
 -- trigger a refresh
