@@ -16,6 +16,7 @@ cargo build --release -F pg$v
 
 echo "Prepare extension files to copy"
 cargo pgrx package
+#cargo audit -D
 
 echo "Copy extension files into .../postgresql/$v/... (required sudo)"
 sudo cp target/release/rppd-pg$v/usr/share/postgresql/$v/extension/rppd* /usr/share/postgresql/$v/extension/
