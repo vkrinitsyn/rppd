@@ -94,9 +94,17 @@ fn connect(host: &String) -> Result<GrpcClient<Channel>, String> {
     }
 }
 
-fn sql() -> String {
-    let schema = "public"; // TODO: use pgrx::pg_sys::GetConfigOptionByName
-    "SELECT host FROM %SCHEMA%.%CONFIG% where master".replace("%SCHEMA%", schema).replace("%CONFIG%", CONFIG_TABLE).to_string()
+fn sql(config_schema_table: &String) -> String {
+    let st = if config_schema_table.len() == 0 {
+        format!("public.{}", CONFIG_TABLE)
+    } else if config_schema_table.starts_with(".") {
+        format!("public{}", config_schema_table)
+    } else if config_schema_table.ends_with(".") {
+        format!("{}{}", config_schema_table, CONFIG_TABLE)
+    } else {
+        config_schema_table
+    };
+    "SELECT host FROM %ST% where master".replace("%ST%", st.as_str()).to_string()
 }
 
 #[pg_trigger]
@@ -235,19 +243,40 @@ fn call(event: EventRequest) -> Result<EventResponse, String> {
 /// output is json
 #[pg_extern(name = "rppd_info")]
 pub fn rppd_info_master() -> String {
-    rppd_info_impl(StatusRequest { node_id: -1, fn_log: None })
+    rppd_info_impl(StatusRequest { config_schema_table: "".to_string(), node_id: -1, fn_log: None })
+}
+/// output is json
+#[pg_extern(name = "rppd_info")]
+pub fn rppd_info_master_st(cfg: String) -> String {
+    rppd_info_impl(StatusRequest {config_schema_table: cfg, node_id: -1, fn_log: None })
 }
 
 /// input is host.id, output is json
 #[pg_extern(name = "rppd_info")]
 pub fn rppd_info_host(node_id: i32) -> String {
-    rppd_info_impl(StatusRequest { node_id, fn_log: None })
+    rppd_info_impl(StatusRequest { config_schema_table: "".to_string(), node_id, fn_log: None })
+}
+
+
+#[pg_extern(name = "rppd_info")]
+pub fn rppd_info_host_st(cfg: String, node_id: i32) -> String {
+    rppd_info_impl(StatusRequest {config_schema_table: cfg,  node_id, fn_log: None })
 }
 
 #[pg_extern(name = "rppd_info")]
 pub fn rppd_info_id(node_id: i32, fn_log_id: i64) -> String {
     rppd_info_impl(StatusRequest {
-        node_id,
+        config_schema_table: "".to_string(), node_id,
+        fn_log: Some(
+            FnLog::FnLogId(fn_log_id)
+        ),
+    })
+}
+
+#[pg_extern(name = "rppd_info")]
+pub fn rppd_info_id_st(cfg: String, node_id: i32, fn_log_id: i64) -> String {
+    rppd_info_impl(StatusRequest {
+        config_schema_table: cfg, node_id,
         fn_log: Some(
             FnLog::FnLogId(fn_log_id)
         ),
@@ -257,7 +286,16 @@ pub fn rppd_info_id(node_id: i32, fn_log_id: i64) -> String {
 #[pg_extern(name = "rppd_info")]
 pub fn rppd_info_uuid(node_id: i32, fn_log_uuid: String) -> String {
     rppd_info_impl(StatusRequest {
-        node_id,
+        config_schema_table: "".to_string(), node_id,
+        fn_log: Some(
+            FnLog::Uuid(fn_log_uuid)
+        ),
+    })
+}
+#[pg_extern(name = "rppd_info")]
+pub fn rppd_info_uuid_st(cfg: String, node_id: i32, fn_log_uuid: String) -> String {
+    rppd_info_impl(StatusRequest {
+        config_schema_table: cfg, node_id,
         fn_log: Some(
             FnLog::Uuid(fn_log_uuid)
         ),
@@ -268,14 +306,14 @@ pub fn rppd_info_uuid(node_id: i32, fn_log_uuid: String) -> String {
 pub fn rppd_info_impl(input: StatusRequest) -> String {
     let client = CONFIG.server.clone();
     if client.read().unwrap().is_err() {
-        let host = match Spi::get_one::<String>(sql().as_str()) {
+        let host = match Spi::get_one::<String>(sql(&input.config_schema_table).as_str()) {
             Ok(path) => path.unwrap_or("".to_string()),
             Err(e) => {
                 let msg = match &e {
                     SpiError::InvalidPosition => "\"message\"=\"Check server is running",
                     _ => ""
                 };
-                return wrap_to_json(format!("{}\", \"sql\"=\"{}\", {}", e, sql(), msg));
+                return wrap_to_json(format!("{}\", \"sql\"=\"{}\", {}", e, sql(&input.config_schema_table), msg));
             }
         };
         let client = connect(&host);

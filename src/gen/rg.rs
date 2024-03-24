@@ -74,11 +74,17 @@ pub struct EventResponse {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StatusRequest {
+    /// The name includes schema, i.e.: schema.table
+    /// default is public.rppd_config
+    /// if .<table> then default use schema is public
+    /// if <schema>. then default use table is rppd_config
+    #[prost(string, tag = "1")]
+    pub config_schema_table: ::prost::alloc::string::String,
     /// node id to check configuration consistency. Take it from rppd_config.id
-    #[prost(int32, tag = "1")]
+    #[prost(int32, tag = "2")]
     pub node_id: i32,
     /// optional function status
-    #[prost(oneof = "status_request::FnLog", tags = "2, 3")]
+    #[prost(oneof = "status_request::FnLog", tags = "4, 3")]
     pub fn_log: ::core::option::Option<status_request::FnLog>,
 }
 /// Nested message and enum types in `StatusRequest`.
@@ -89,7 +95,7 @@ pub mod status_request {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum FnLog {
         /// function status as id from rppd_fn_log
-        #[prost(int64, tag = "2")]
+        #[prost(int64, tag = "4")]
         FnLogId(i64),
         /// function status as uuid when not saved to rppd_fn_log
         #[prost(string, tag = "3")]

@@ -89,12 +89,17 @@ comment on column @extschema@.rppd_cron.cron is 'The schedule see https://en.wik
 comment on column @extschema@.rppd_cron.column_name is 'The column in target table to update';
 comment on column @extschema@.rppd_cron.column_value is 'The column SQL value in target table to update';
 comment on column @extschema@.rppd_cron.cadence is 'The flag indicate to run this cron job only if the function was not started by cron defined. Required a rppd_function_log i.e. cleanup_logs_min > 0';
-comment on column @extschema@.rppd_cron.finished_at is 'The function wont start if finished_at is null. If started_at is null, the function never started yet';
+comment on column @extschema@.rppd_cron.finished_at is 'The function wont start if finished_at is null, except timeout. If started_at is null, the function never started yet';
+comment on column @extschema@.rppd_cron.timeout is 'The if the finished_at is not null but started_at . If started_at is null, the function never started yet';
 
 -- trigger a refresh
-CREATE TRIGGER @extschema@_rppd_cron_event AFTER INSERT OR UPDATE OR DELETE ON
+CREATE TRIGGER @extschema@_rppd_cron_event AFTER INSERT OR DELETE ON
     @extschema@.rppd_cron FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
 
+CREATE TRIGGER @extschema@_rppd_cron_event_up AFTER UPDATE OF id, fn_id, cron, column_name, column_value, cadence, timeout_sec
+    ON @extschema@.rppd_cron FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
+
 comment on function @extschema@.rppd_info(node_id integer) is 'Return node status in json format by node_id from rppd_config.id table';
+comment on function @extschema@.rppd_info(cfg text) is 'Use the config table name: The name includes schema, i.e.: schema.table. Default is "public.rppd_config". if ".<table>" than default use schema is "public". if "<schema>." than default use table is "rppd_config"';
 comment on function @extschema@.rppd_info(node_id integer, fn_log_id bigint) is 'Same as node status plus function execution status by fn_log.id table';
 comment on function @extschema@.rppd_info(node_id integer, fn_log_uuid text) is 'Same as node status plus function execution status by uuid if not store to fn_log.id table. use * to get all uuid.';

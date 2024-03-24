@@ -65,12 +65,17 @@ enum FnAction {
 }
 
 message StatusRequest {
+	// The name includes schema, i.e.: schema.table
+	// default is public.rppd_config
+	// if .<table> then default use schema is public
+	// if <schema>. then default use table is rppd_config
+	string config_schema_table = 1;
 	// node id to check configuration consistency. Take it from rppd_config.id
-	int32 node_id = 1;
+	int32 node_id = 2;
 	// optional function status
 	oneof fn_log {
 		// function status as id from rppd_fn_log
-		int64 fn_log_id = 2;
+		int64 fn_log_id = 4;
 		// function status as uuid when not saved to rppd_fn_log
 		string uuid = 3;
 	}

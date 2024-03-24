@@ -19,7 +19,7 @@ use tonic::transport::{Channel, Endpoint};
 use uuid::Uuid;
 
 use crate::arg_config::*;
-use crate::cron::RpFnCron;
+use crate::cron::{CronContext, RpFnCron};
 use crate::gen::rg::*;
 use crate::gen::rg::*;
 use crate::gen::rg::grpc_client::GrpcClient;
@@ -143,8 +143,7 @@ pub(crate) struct Cluster {
     /// currently executing queues per topic as generated name. None value means the RpFnLog is in progress as a queue set
     pub(crate) queue: Arc<RwLock<QueueType>>,
 
-    /// TODO implement cron
-    pub(crate) cron: Arc<RwLock<Vec<RpFnCron>>>,
+    pub(crate) cron: Arc<RwLock<CronContext>>,
 }
 
 #[inline]
@@ -506,8 +505,7 @@ impl Cluster {
             self.queueing(l, false).await; // append loaded on startup
         }
 
-        // let _ = self.reload_crons(&None).await?;
-        RpFnCron::load(&self.cfg.schema, self.db(), &mut *self.cron.write().await);
+        let _ = self.reload_cron(&None).await;
 
         // set STARTED
         self.started.store(true, Ordering::Relaxed);
@@ -546,6 +544,7 @@ impl Cluster {
                     if let Ok(master) = node {
                         // notify master about completion of function execution and trigger to pick a next event in a queue
                         let _ = master.lock().await.complete(StatusRequest {
+                            config_schema_table: self.cfg.schema.clone(),
                             node_id: self.node_id.load(Ordering::Relaxed),
                             fn_log: Some(
                                 if f.id > 0 {

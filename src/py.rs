@@ -80,11 +80,11 @@ impl PyContext {
     }
 
 
-    pub fn dict<'a>(&self, x: &'a RpFnLog, fc: &'a RpFn, py: Python<'a>) -> &'a PyDict {
+    fn make_dict<'a>(&self, x: &'a RpFnLog, fc: &'a RpFn, py: Python<'a>) -> &'a PyDict {
         let mut local = [
-            (DB, self.py_db.as_ref(py)),
-            // (TOPIC, fc.fns.topic.clone().into_py(py).as_ref(py)),
-            // (TABLE, fc.fns.schema_table.clone().into_py(py).as_ref(py)),
+            (DB, self.py_db.as_ref(py)), // py_db: ManuallyDrop<PyObject>,
+            // (TOPIC, fc.topic.clone().into_py(py).as_ref(py)),
+            // (TABLE, fc.schema_table.clone().into_py(py).as_ref(py)),
             // (TRIG, x.trig_type.clone().into_py(py).as_ref(py)),
         ].to_vec();
         if let Some(pks) = &x.trig_value {
@@ -96,8 +96,6 @@ impl PyContext {
     }
 
     pub(crate) fn invoke(&mut self, x: &RpFnLog, fc: &RpFn) -> Result<(), String> {
-
-        // pub fn invoke(&self, script: String,  fn_name: String,  table: String, env: HashMap<String, String>, pks: Vec<u64>) -> Result<(), String> {
         Python::with_gil(|py| {
             let mut locals = Vec::new();
             if let Some(pks) = &x.trig_value {
@@ -105,7 +103,6 @@ impl PyContext {
                     locals.push((pk.to_ascii_uppercase(), pk_val.into_py(py)));
                 }
             }
-            // println!("call with: {:?}", locals);
             for i in locals.len()..3 { locals.push((format!("_nil{}", i), "".into_py(py))); } // to avoid out of index
             let locals = [
                 (DB, self.py_db.as_ref(py)),
@@ -114,10 +111,10 @@ impl PyContext {
                 (TRIG, x.trig_type.clone().into_py(py).as_ref(py)),
                 (locals[0].0.as_str(), locals[0].1.as_ref(py)), // TODO fix the reference problem self.dict()
                 (locals[1].0.as_str(), locals[1].1.as_ref(py)),
-                (locals[2].0.as_str(), locals[2].1.as_ref(py)),
+                (locals[2].0.as_str(), locals[2].1.as_ref(py)), // for now max support is 3
             ].into_py_dict(py);
 
-            let local = self.dict(x, fc, py);
+            let local = self.make_dict(x, fc, py); // will use to create 'locals' instead of code above once fixed make_dict()
 
             let res = py.run(fc.code.as_str(), None, Some(locals));
             self.ltu = Instant::now();
