@@ -41,7 +41,7 @@ fn do_build(name: &str) -> io::Result<()> {
     let _ = tonic_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .out_dir(PathBuf::from(TEMP_GEN_DIR))
-        .compile(&[file.as_str()], &[DIR])?;
+        .compile_protos(&[file.as_str()], &[DIR])?;
 
     match fs::read_to_string(format!("{}/{}.rs", TEMP_GEN_DIR, name)) {
         Ok(mut contents) => {
