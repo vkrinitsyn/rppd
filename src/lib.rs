@@ -102,7 +102,7 @@ fn sql(config_schema_table: &String) -> String {
     } else if config_schema_table.ends_with(".") {
         format!("{}{}", config_schema_table, CONFIG_TABLE)
     } else {
-        config_schema_table
+        config_schema_table.into()
     };
     "SELECT host FROM %ST% where master".replace("%ST%", st.as_str()).to_string()
 }

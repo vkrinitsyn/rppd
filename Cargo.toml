@@ -17,19 +17,19 @@ path = "src/main.rs"
 [dependencies]
 chrono = { version = "0.4.19", features = ["serde"] }
 
-slog = { version = "^2.7.0", features=["max_level_debug"] }
-slog-async = "^2.6.0"
-slog-envlogger = "^2.2.0"
-slog-stdlog = "^4.1.0"
-slog-term = "^2.8.0"
-sloggers = "^2.1"
+slog = { version = "2.7.0", features=["max_level_info"] }
+#slog-async = "^2.6.0"
+#slog-envlogger = "^2.2.0"
+#slog-stdlog = "^4.1.0"
+#slog-term = "^2.8.0"
+#sloggers = "^2.1"
 
 tokio = { version = "1.25.0", features = ["macros", "rt-multi-thread", "net", "rt", "fs", "time", "signal", "signal-hook-registry" ] }
 tokio-stream = { version = "0.1.8", features = ["net"] }
 async-trait = "^0.1"
-tonic = { version = "0.10.2", features = [] }
-prost = "0.12.1"
-prost-types = "0.12.1"
+tonic = { version = "0.12.3", features = ["prost", "codegen"] }
+prost = { version = "0.13.5", features = ["default"] }
+prost-types = "0.13.5"
 tower = "0.4.12"
 
 uuid = {version= "1.5.0", features = ["v4"]}
@@ -70,7 +70,8 @@ pg_test = ["pgrx/pg15", "pgrx-tests/pg15"]
 
 
 [build-dependencies]
-tonic-build = { version = "^0.10", features = []}
+tonic-build = { version = "^0.12", features = ["prost-build", "transport", "prost"]}
+protobuf = { version = "3.7.1", features = ["with-bytes"] }
 
 [profile.dev]
 panic = "unwind"
