@@ -117,8 +117,8 @@ impl PyContext {
             ].into_py_dict(py)?;
 
             // let local = self.make_dict(x, fc, py); // will use to create 'locals' instead of code above once fixed make_dict()
-
-            let res = py.run(_cstr_from_utf8_with_nul_checked(fc.code.as_str()), None, Some(&locals));
+            
+            let res = py.run(fc.code()?.as_c_str(), None, Some(&locals));
             self.ltu = Instant::now();
             res
         }).map_err(|e| fc.err_msg(e, x))

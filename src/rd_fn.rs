@@ -2,10 +2,12 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::ffi::{CStr, CString};
 use std::time::Instant;
 
 use chrono::Utc;
 use pyo3::{IntoPy, PyErr};
+use pyo3::exceptions::PyTypeError;
 use pyo3::types::IntoPyDict;
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
@@ -264,8 +266,13 @@ impl RpFn {
         };
         format!("error on run [{}]@{}: {} in {}", self.schema_table, self.topic, err, msg)
     }
-}
 
+    #[inline]
+    pub(crate) fn code(&self) -> Result<CString, PyErr> {
+        CString::new(self.code.as_str())
+            .map_err(|e| PyErr::new::<PyTypeError, _>(format!("Code on Fn#{} failed to read: {}", self.id, e)))
+    }
+}
 
 const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, started_at, took_sec, error_msg from %SCHEMA%.rppd_function_log ";
 
