@@ -236,7 +236,7 @@ impl Cluster {
         }
 
         let r = r.fetch_all(&self.db()).await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("load functions [{}] {}", sql, e))?;
         let mut loaded = BTreeSet::new();
         for f in r {
             loaded.insert(RpFnId::fromf(&f));
@@ -290,10 +290,10 @@ impl Cluster {
         let mut nodes = BTreeMap::new();
         let mut node_connections = BTreeMap::new();
         let mut node_id = HashMap::new();
-
-        let r = sqlx::query_as::<_, RpHost>(RpHost::select(&c.schema, "active_since is not null").as_str())
+        let sql = RpHost::select(&c.schema, "active_since is not null");
+        let r = sqlx::query_as::<_, RpHost>(sql.as_str())
             .fetch_all(&pool).await
-            .map_err(|e| format!("Loading cluster of active nodes: {}", e))?;
+            .map_err(|e| format!("Loading cluster of active nodes [{}]: {}", sql, e))?;
         let mut master = false; // master is present and up
         let mut found_self = false; // is self registered
         let mut found_self_master = false; // is self registered

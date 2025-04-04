@@ -179,8 +179,10 @@ fn rppd_event<'a>(
         DbAction::Insert as i32
     } else if trigger.event().fired_by_delete() {
         DbAction::Delete as i32
-    } else {
+    } else if trigger.event().fired_by_truncate() {
         DbAction::Truncate as i32
+    } else {
+        DbAction::Dual as i32
     };
 
     // if event.event_type == DbAction::Insert as i32 && event.table_name.ends_with(CONFIG_TABLE)

@@ -9,6 +9,7 @@ enum DbAction {
 	INSERT = 1;
 	DELETE = 2;
 	TRUNCATE = 3;
+	DUAL = 4;
 }
 
 message EventRequest {

@@ -30,7 +30,7 @@ CREATE table if not exists @extschema@.rppd_function (
     priority int not null default 1,
     queue bool not null default true,
     cleanup_logs_min int not null default 0,
-    verbose bool not null default false,
+    verbose_debug bool not null default false,
     env json, -- reserved for future usage: db pool (read only)/config python param name prefix (mapping)
     sign json -- reserved for future usage: approve sign
 );

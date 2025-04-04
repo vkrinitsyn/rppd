@@ -50,7 +50,7 @@ lazy_static! {
     static ref LANGUAGE_LOADER: FluentLanguageLoader = {
 		let loader: FluentLanguageLoader = fluent_language_loader!();
 		loader
-		.load_languages(&Localizations, &[loader.fallback_language()])
+		.load_languages(&Localizations, &[loader.fallback_language().clone()])
 		.unwrap();
 		loader
     };
