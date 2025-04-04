@@ -168,8 +168,8 @@ impl Cluster {
         let mut errors = 0;
 
         loop {
-            // check stored master id in DB -- might be changed because of network, restart etc
-            // DB is must to have and DB have a trusted data, but DB data might be obsolete in case of master is down
+            // check stored master id in DB -- might be changed because of network, restart etc,
+            // DB is must have and DB have a trusted data, but DB data might be obsolete in case of master is down
             match sqlx::query_scalar::<_, i32>(sql_id.as_str()).fetch_one(&self.db()).await {
                 Ok(master_id) => {
                     prev_db_master = Some(master_id); // just in case of use on reset in db
@@ -188,7 +188,9 @@ impl Cluster {
                             if let Some(node) = self.node_connections.read().await.get(&id) {
                                 match node {
                                     Ok(n) => {
-                                        match n.lock().await.status(StatusRequest { node_id: id.clone(), fn_log: None }).await {
+                                        match n.lock().await.status(StatusRequest {
+                                            config_schema_table: self.cfg.schema.clone(),
+                                            node_id: id.clone(), fn_log: None }).await {
                                             Ok(r) => {
                                                 let r = r.into_inner();
                                                 let mut stat = self.stat.write().await;
@@ -220,7 +222,9 @@ impl Cluster {
                         if let Some(node) = self.node_connections.read().await.get(&master_id) {
                             match node {
                                 Ok(n) => {
-                                    match n.lock().await.status(StatusRequest { node_id: master_id, fn_log: None }).await {
+                                    match n.lock().await.status(StatusRequest {
+                                        config_schema_table: self.cfg.schema.clone(),
+                                        node_id: master_id, fn_log: None }).await {
                                         Ok(r) => {
                                             let r = r.into_inner();
                                             if !r.is_master {  // discrepancy
@@ -254,7 +258,7 @@ impl Cluster {
                 errors = 0;
                 self.become_master(prev_db_master).await;
             }
-
+            self.cronjob().await;
             let _ = sleep(Duration::from_millis(TIMEOUT_MS));
         }
     }

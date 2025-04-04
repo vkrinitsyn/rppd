@@ -69,11 +69,17 @@ pub struct EventResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StatusRequest {
+    /// The name includes schema, i.e.: schema.table
+    /// default is public.rppd_config
+    /// if .<table> then default use schema is public
+    /// if <schema>. then default use table is rppd_config
+    #[prost(string, tag = "1")]
+    pub config_schema_table: ::prost::alloc::string::String,
     /// node id to check configuration consistency. Take it from rppd_config.id
-    #[prost(int32, tag = "1")]
+    #[prost(int32, tag = "2")]
     pub node_id: i32,
     /// optional function status
-    #[prost(oneof = "status_request::FnLog", tags = "2, 3")]
+    #[prost(oneof = "status_request::FnLog", tags = "4, 3")]
     pub fn_log: ::core::option::Option<status_request::FnLog>,
 }
 /// Nested message and enum types in `StatusRequest`.
@@ -83,7 +89,7 @@ pub mod status_request {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum FnLog {
         /// function status as id from rppd_fn_log
-        #[prost(int64, tag = "2")]
+        #[prost(int64, tag = "4")]
         FnLogId(i64),
         /// function status as uuid when not saved to rppd_fn_log
         #[prost(string, tag = "3")]
@@ -166,6 +172,7 @@ pub enum DbAction {
     Insert = 1,
     Delete = 2,
     Truncate = 3,
+    Dual = 4,
 }
 impl DbAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -178,6 +185,7 @@ impl DbAction {
             Self::Insert => "INSERT",
             Self::Delete => "DELETE",
             Self::Truncate => "TRUNCATE",
+            Self::Dual => "DUAL",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -187,6 +195,7 @@ impl DbAction {
             "INSERT" => Some(Self::Insert),
             "DELETE" => Some(Self::Delete),
             "TRUNCATE" => Some(Self::Truncate),
+            "DUAL" => Some(Self::Dual),
             _ => None,
         }
     }
@@ -284,7 +293,7 @@ pub mod grpc_client {
     }
     impl<T> GrpcClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody>,
+        T: tonic::client::GrpcService<tonic::body::Body>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -305,13 +314,13 @@ pub mod grpc_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             GrpcClient::new(InterceptedService::new(inner, interceptor))
@@ -525,7 +534,7 @@ pub mod grpc_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::BoxBody>;
+        type Response = http::Response<tonic::body::Body>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -710,7 +719,9 @@ pub mod grpc_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(empty_body());
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
                         let headers = response.headers_mut();
                         headers
                             .insert(

@@ -65,8 +65,7 @@ impl Grpc for Cluster {
             } else if request.table_name.ends_with(CFG_FN_TABLE) {
                 self.reload_fs(&Some(request)).await
             } else if request.table_name.ends_with(CFG_CRON_TABLE) {
-                // self.reload_crons(&Some(request)).await
-                RpFnCron::load(&self.cfg.schema, self.db(), &mut *self.cron.write().await).await
+                self.reload_cron(&Some(request)).await
             } else { // if request.table_name.ends_with(CFG_FNL_TABLE) {
                 // no trigger should be there
                 Ok(())

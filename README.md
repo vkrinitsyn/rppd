@@ -25,7 +25,6 @@ IF
 Then (this takes time)
 ```shell
 cargo install cargo-pgrx --force && cargo pgrx init 
-cargo install cargo-audit
 ```
 
 ## Overall architecture
@@ -128,4 +127,5 @@ if len(input) > 0:
 - RESTapi/PubSub/ServiceBus to trigger events
 - OpenTelemetry logging integration like Appins  
 - Keyvault integration for a Database connections
+
 
