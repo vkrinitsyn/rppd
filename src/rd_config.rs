@@ -19,7 +19,7 @@ use tonic::transport::{Channel, Endpoint};
 use uuid::Uuid;
 
 use crate::arg_config::*;
-use crate::cron::RpFnCron;
+use crate::cron::{CronContext, RpFnCron};
 use crate::gen::rg::*;
 use crate::gen::rg::*;
 use crate::gen::rg::grpc_client::GrpcClient;
@@ -143,8 +143,7 @@ pub(crate) struct Cluster {
     /// currently executing queues per topic as generated name. None value means the RpFnLog is in progress as a queue set
     pub(crate) queue: Arc<RwLock<QueueType>>,
 
-    /// TODO implement cron
-    pub(crate) cron: Arc<RwLock<Vec<RpFnCron>>>,
+    pub(crate) cron: Arc<RwLock<CronContext>>,
 }
 
 #[inline]
@@ -237,7 +236,7 @@ impl Cluster {
         }
 
         let r = r.fetch_all(&self.db()).await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("load functions [{}] {}", sql, e))?;
         let mut loaded = BTreeSet::new();
         for f in r {
             loaded.insert(RpFnId::fromf(&f));
@@ -291,10 +290,10 @@ impl Cluster {
         let mut nodes = BTreeMap::new();
         let mut node_connections = BTreeMap::new();
         let mut node_id = HashMap::new();
-
-        let r = sqlx::query_as::<_, RpHost>(RpHost::select(&c.schema, "active_since is not null").as_str())
+        let sql = RpHost::select(&c.schema, "active_since is not null");
+        let r = sqlx::query_as::<_, RpHost>(sql.as_str())
             .fetch_all(&pool).await
-            .map_err(|e| format!("Loading cluster of active nodes: {}", e))?;
+            .map_err(|e| format!("Loading cluster of active nodes [{}]: {}", sql, e))?;
         let mut master = false; // master is present and up
         let mut found_self = false; // is self registered
         let mut found_self_master = false; // is self registered
@@ -506,8 +505,7 @@ impl Cluster {
             self.queueing(l, false).await; // append loaded on startup
         }
 
-        // let _ = self.reload_crons(&None).await?;
-        RpFnCron::load(&self.cfg.schema, self.db(), &mut *self.cron.write().await);
+        let _ = self.reload_cron(&None).await;
 
         // set STARTED
         self.started.store(true, Ordering::Relaxed);
@@ -546,6 +544,7 @@ impl Cluster {
                     if let Ok(master) = node {
                         // notify master about completion of function execution and trigger to pick a next event in a queue
                         let _ = master.lock().await.complete(StatusRequest {
+                            config_schema_table: self.cfg.schema.clone(),
                             node_id: self.node_id.load(Ordering::Relaxed),
                             fn_log: Some(
                                 if f.id > 0 {

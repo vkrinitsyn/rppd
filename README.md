@@ -24,8 +24,7 @@ IF
 
 Then (this takes time)
 ```shell
-cargo install cargo-pgrx --force
-cargo pgrx init 
+cargo install cargo-pgrx --force && cargo pgrx init 
 ```
 
 ## Overall architecture

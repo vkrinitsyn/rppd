@@ -2,10 +2,12 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::ffi::{CStr, CString};
 use std::time::Instant;
 
 use chrono::Utc;
 use pyo3::{IntoPy, PyErr};
+use pyo3::exceptions::PyTypeError;
 use pyo3::types::IntoPyDict;
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
@@ -14,7 +16,7 @@ use crate::gen::rg::{event_request, EventRequest, pk_column, PkColumn};
 use crate::py::PyCall;
 use crate::rd_config::{Cluster, TopicType};
 
-pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, verbose from %SCHEMA%.rppd_function ";
+pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, verbose_debug from %SCHEMA%.rppd_function ";
 
 /// Rust Python Function
 #[derive(sqlx::FromRow, PartialEq, Debug, Clone)]
@@ -29,7 +31,7 @@ pub struct RpFn {
     pub(crate) cleanup_logs_min: i32,
     /// queue priority
     pub(crate) priority: i32,
-    pub(crate) verbose: bool,
+    pub(crate) verbose_debug: bool,
     // env json, -- TODO reserved for future usage: db pool (read only)/config python param name prefix (mapping)
     // sign json -- TODO reserved for future usage: approve sign, required RSA private key on startup config
 }
@@ -257,15 +259,20 @@ impl RpFn {
                 input.push_str(format!("{}={}", k, v).as_str());
             }
         };
-        let msg = if self.verbose {
+        let msg = if self.verbose_debug {
             format!("python:[\n{}\n] input: ({})", self.code, input)
         } else {
             "".to_string()
         };
         format!("error on run [{}]@{}: {} in {}", self.schema_table, self.topic, err, msg)
     }
-}
 
+    #[inline]
+    pub(crate) fn code(&self) -> Result<CString, PyErr> {
+        CString::new(self.code.as_str())
+            .map_err(|e| PyErr::new::<PyTypeError, _>(format!("Code on Fn#{} failed to read: {}", self.id, e)))
+    }
+}
 
 const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, started_at, took_sec, error_msg from %SCHEMA%.rppd_function_log ";
 
