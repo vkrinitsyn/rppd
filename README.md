@@ -96,7 +96,7 @@ DB.commit()
 create table if not exists test_source (id serial primary key, input text);
 create table if not exists test_sink (id serial primary key, data text);
 \set code `cat test_fn.py`
-insert into rppd_function (code, checksum, schema_table, topic) values (:'code', 'na', 'public.test_source', '.id');
+insert into rppd_function (code, checksum, schema_table, topic, verbose_debug) values (:'code', 'na', 'public.test_source', '.id', true);
 CREATE TRIGGER test_src_event AFTER INSERT OR UPDATE OR DELETE ON test_source FOR EACH ROW EXECUTE PROCEDURE rppd_event();
 insert into test_source (input) values ('test input');
 select * from test_sink;
@@ -129,3 +129,6 @@ if len(input) > 0:
 - Keyvault integration for a Database connections
 
 
+git clone https://github.com/lupko/etcd3-client.git
+pip install .
+pip install typing-extensions

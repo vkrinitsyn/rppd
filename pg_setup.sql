@@ -30,6 +30,7 @@ CREATE table if not exists @extschema@.rppd_function (
     priority int not null default 1,
     queue bool not null default true,
     cleanup_logs_min int not null default 0,
+    err text,
     verbose_debug bool not null default false,
     env json, -- reserved for future usage: db pool (read only)/config python param name prefix (mapping)
     sign json -- reserved for future usage: approve sign
@@ -42,7 +43,8 @@ comment on column @extschema@.rppd_function.schema_table is 'The rppd_event() mu
 comment on column @extschema@.rppd_function.topic is '"": queue/topic per table (see schema_table); ".{column}": queue per value of the column "id" in this table, the value type must be int; "{any_name}": global queue i.e. multiple tables can share the same queue/topic';
 comment on column @extschema@.rppd_function.queue is 'if queue, then perform consequence events execution for the same topic. Ex: if the "topic" is ".id" and not queue, then events for same row will execute in parallel';
 comment on column @extschema@.rppd_function.cleanup_logs_min is 'Cleanup rppd_function_log after certain minutes,  Zero is not store logs to rppd_function_log';
-comment on column @extschema@.rppd_function.verbose is 'Provide extra log message on error';
+comment on column @extschema@.rppd_function.err is 'Should be set null to try load python function';
+comment on column @extschema@.rppd_function.verbose_debug is 'Provide extra log message on error';
 
 CREATE TRIGGER @extschema@_rppd_function_event AFTER INSERT OR UPDATE OR DELETE ON
     @extschema@.rppd_function FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();

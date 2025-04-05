@@ -259,7 +259,7 @@ impl Cluster {
                 self.become_master(prev_db_master).await;
             }
             self.cronjob().await;
-            let _ = sleep(Duration::from_millis(TIMEOUT_MS));
+            let _ = sleep(Duration::from_millis(5*TIMEOUT_MS)).await;
         }
     }
 

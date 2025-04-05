@@ -11,11 +11,11 @@ use crate::rd_config::Cluster;
 use crate::rd_fn::RpFnLog;
 
 pub(crate) enum ScheduleResult {
-    // no need schedule
+    /// no need schedule
     None,
-    // Ok
+    /// Ok
     Some(Vec<RpFnLog>),
-    // repeat a call with column name
+    /// repeat a call with column name
     Repeat(Vec<PkColumn>),
 }
 

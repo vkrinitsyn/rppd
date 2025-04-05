@@ -45,6 +45,7 @@ bb8-postgres = {version = "0.9.0", features = ["with-chrono-0_4","with-uuid-0_8"
 
 thiserror = "*"
 pyo3 = { version = "^0.24", features = ["auto-initialize", "uuid"] }
+etcd-client = "0.14.1"
 
 sqlx = { version = "0.8.3", features = ["postgres", "runtime-tokio", "chrono"] }
 

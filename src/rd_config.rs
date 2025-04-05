@@ -361,11 +361,8 @@ impl Cluster {
             tokio::spawn(async move {
                 ctxm.start_monitoring().await;
             });
-            loop {
-                match rsvr.recv().await {
-                    None => { break; }
-                    Some(ci) => ctx.execute(ci).await
-                }
+            while let Some(ci) = rsvr.recv().await {
+                ctx.execute(ci).await
             }
         });
     }
@@ -517,6 +514,7 @@ impl Cluster {
     /// call by receive
     #[inline]
     async fn execute(&self, f: Option<RpFnLog>) {
+        println!("invoke {:?}", f);
         let f = match f {
             None => match self.queue.write().await.pick_one() {
                 None => { // nothing to execute from topics or not ready as a queue
@@ -557,6 +555,7 @@ impl Cluster {
                     }
                 }
             }
+            // println!("re-send1");
             self.sender.send(None).await;
             return;
         }
@@ -580,8 +579,10 @@ impl Cluster {
                             .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url(), e)) {
                             Ok(p) => p,
                             Err(e) => {
+                                // TODO write error
+                                println!("update_err {}", e);
                                 f.update_err(e, self.db(), &self.cfg.schema).await;
-                                let _ = self.sender.send(Some(f)).await; // re-queing
+                                // let _ = self.sender.send(Some(f)).await; // re-queing
                                 return;
                             }
                         };
@@ -636,6 +637,7 @@ impl Cluster {
             match self.pick_node().await {
                 None => {
                     if self.max_db_connections.load(Ordering::Relaxed) > self.max_context.load(Ordering::Relaxed) {
+                        print!("re-send q2");
                         let _ = self.sender.send(Some(l)).await; // queueing()
                     } else {
                         self.queue.write().await.put_one(l, topic, fn_id, false);
