@@ -1,0 +1,28 @@
+[package]
+name = "rppd-common"
+version = "0.2.1"
+authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
+edition = "2021"
+description = "RPPD inclusing Trigger for Postgres"
+
+[dependencies]
+
+async-trait = "^0.1"
+tonic = { version = "0.13.0", features = ["prost", "codegen"] }
+prost = { version = "0.13.5", features = ["default"] }
+
+serde = { version = "1.0", features = ["derive"] }
+
+[build-dependencies]
+tonic-build = { version = "^0.13", features = ["prost-build", "transport", "prost"]}
+protobuf = { version = "3.7.1", features = ["with-bytes"] }
+
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+
+opt-level = "z"
+lto = "thin"
+codegen-units = 1

@@ -2,10 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use shim::Histogram;
+use shims::Histogram;
 use tokio::time::sleep;
-
-use crate::gen::rg::{StatusRequest, StatusResponse};
+use rppd_common::gen::rppc::{StatusRequest, StatusResponse};
 use crate::rd_config::{Cluster, DWN_MASTER, MAX_ERRORS, SELECT_MASTER, TIMEOUT_MS, UP_MASTER};
 
 #[derive(Clone)]
@@ -32,8 +31,8 @@ impl Default for NodeStat {
     fn default() -> NodeStat {
         NodeStat {
             node_id: 0,
-            queue: Histogram::new(shim::Config::default()),
-            in_proc: Histogram::new(shim::Config::default()),
+            queue: Histogram::new(shims::Config::default()),
+            in_proc: Histogram::new(shims::Config::default()),
             weight: 0,
             self_master: false,
             online: false,

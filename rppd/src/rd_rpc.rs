@@ -2,11 +2,12 @@ use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use tonic::{Request, Response, Status};
-
+use rppd_common::gen::rppc::{DbEventRequest, DbEventResponse, PkColumn, StatusRequest, StatusResponse};
+use rppd_common::gen::rppd::rppd_node_server::RppdNode;
+use rppd_common::gen::rppd::{MessageRequest, MessageResponse, SwitchRequest, SwitchResponse};
+use rppd_common::gen::rppg::rppd_trigger_server::RppdTrigger;
 use crate::arg_config::{CFG_CRON_TABLE, CFG_FN_TABLE, CFG_TABLE};
 use crate::cron::RpFnCron;
-use crate::gen::rg::{EventRequest, EventResponse, PkColumn, StatusRequest, StatusResponse, SwitchRequest, SwitchResponse};
-use crate::gen::rg::grpc_server::Grpc;
 use crate::rd_config::Cluster;
 use crate::rd_fn::RpFnLog;
 
@@ -20,20 +21,62 @@ pub(crate) enum ScheduleResult {
 }
 
 #[async_trait]
-impl Grpc for Cluster {
-    async fn event(&self, request: Request<EventRequest>) -> Result<Response<EventResponse>, Status> {
+impl RppdNode for Cluster {
+    async fn message(&self, request: Request<MessageRequest>) -> Result<Response<MessageResponse>, Status> {
+        Err(Status::unimplemented("unimplemented"))
+    }
+
+    async fn event(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
+        self.event_impl(request).await
+    }
+
+    ///
+    async fn complete(&self, request: Request<StatusRequest>) -> Result<Response<SwitchResponse>, Status> {
+        let _r = request.into_inner();
+        self.sender.send(None).await;
+        Ok(Response::new(SwitchResponse {}))
+    }
+
+    async fn switch(&self, request: Request<SwitchRequest>) -> Result<Response<SwitchResponse>, Status> {
+        if !self.master.load(Ordering::Relaxed) {
+            let ctx = self.clone();
+            let master = request.into_inner();
+            tokio::spawn(async move {
+                ctx.become_master(Some(master.node_id)).await;
+            });
+        }
+        Ok(Response::new(SwitchResponse {}))
+    }
+
+    async fn status(&self, request: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
+        self.status_impl(request).await
+    }
+}
+
+#[async_trait]
+impl RppdTrigger for Cluster {
+    async fn event(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
+        self.event_impl(request).await
+    }
+    async fn status(&self, request: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
+        self.status_impl(request).await
+    }
+}
+
+impl Cluster {
+    async fn event_impl(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
         let request = request.into_inner();
         if request.optional_caller.is_some() && self.master.load(Ordering::Relaxed) {
-            return Ok(Response::new(EventResponse { saved: false, repeat_with: vec![] })); // no reverse call from host to master
+            return Ok(Response::new(DbEventResponse { saved: false, repeat_with: vec![] })); // no reverse call from host to master
         }
 
         if !self.started.load(Ordering::Relaxed) {
             // not started
             return if request.table_name.starts_with(&self.cfg.schema) && request.table_name.ends_with(CFG_TABLE) {
-                Ok(Response::new(EventResponse { saved: true, repeat_with: vec![] })) // init stage to set master
+                Ok(Response::new(DbEventResponse { saved: true, repeat_with: vec![] })) // init stage to set master
             } else {
                 if request.optional_caller.is_some() {
-                    Ok(Response::new(EventResponse { saved: false, repeat_with: vec![] })) // tell master, node is not ready
+                    Ok(Response::new(DbEventResponse { saved: false, repeat_with: vec![] })) // tell master, node is not ready
                 } else {
                     Err(Status::internal("not a master"))
                 }
@@ -51,7 +94,7 @@ impl Grpc for Cluster {
             }
             ScheduleResult::Repeat(repeat_with) => {
                 println!("re-requesting to repeat: {:?}", repeat_with);
-                return Ok(Response::new(EventResponse { saved: false, repeat_with }));
+                return Ok(Response::new(DbEventResponse { saved: false, repeat_with }));
             }
         }
 
@@ -74,10 +117,10 @@ impl Grpc for Cluster {
             }
         }
 
-        Ok(Response::new(EventResponse { saved: true, repeat_with: vec![] }))
+        Ok(Response::new(DbEventResponse { saved: true, repeat_with: vec![] }))
     }
 
-    async fn status(&self, request: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
+    async fn status_impl(&self, request: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
         let r = request.into_inner();
         if !self.started.load(Ordering::Relaxed) {
             Err(Status::unavailable("starting"))
@@ -110,23 +153,6 @@ impl Grpc for Cluster {
         }
     }
 
-    ///
-    async fn complete(&self, request: Request<StatusRequest>) -> Result<Response<SwitchResponse>, Status> {
-        let _r = request.into_inner();
-        self.sender.send(None).await;
-        Ok(Response::new(SwitchResponse {}))
-    }
-
-    async fn switch(&self, request: Request<SwitchRequest>) -> Result<Response<SwitchResponse>, Status> {
-        if !self.master.load(Ordering::Relaxed) {
-            let ctx = self.clone();
-            let master = request.into_inner();
-            tokio::spawn(async move {
-                ctx.become_master(Some(master.node_id)).await;
-            });
-        }
-        Ok(Response::new(SwitchResponse {}))
-    }
 }
 
 

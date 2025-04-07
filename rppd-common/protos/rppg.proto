@@ -1,0 +1,19 @@
+/*%LPH%*/
+
+syntax = "proto3";
+
+package rppg;
+
+import "rppc.proto";
+
+
+//The GRPC service to call from DB trigger
+service RppdTrigger {
+	// call by trigger
+	rpc event(rppc.DbEventRequest) returns (rppc.DbEventResponse) {}
+
+	// call from psql to node for a runtime info about function execution
+	rpc status(rppc.StatusRequest) returns (rppc.StatusResponse) {}
+}
+
+

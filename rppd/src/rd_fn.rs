@@ -11,8 +11,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::types::IntoPyDict;
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
-
-use crate::gen::rg::{event_request, EventRequest, pk_column, PkColumn};
+use rppd_common::gen::rppc::{db_event_request, pk_column, DbEventRequest, PkColumn};
 use crate::py::PyCall;
 use crate::rd_config::{Cluster, TopicType};
 
@@ -31,8 +30,6 @@ pub struct RpFn {
     pub(crate) cleanup_logs_min: i32,
     /// queue priority
     pub(crate) priority: i32,
-    /// if error set not null, the code is not working
-    pub(crate) err: Option<String>,
     pub(crate) verbose_debug: bool,
     // env json, -- TODO reserved for future usage: db pool (read only)/config python param name prefix (mapping)
     // sign json -- TODO reserved for future usage: approve sign, required RSA private key on startup config
@@ -363,7 +360,7 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) fn to_event(&self, table_name: String, node_id: i32) -> EventRequest {
+    pub(crate) fn to_event(&self, table_name: String, node_id: i32) -> DbEventRequest {
         let mut pks = Vec::new();
         if let Some(val) = &self.trig_value {
             for ((c, v)) in val.0.iter() {
@@ -381,12 +378,12 @@ impl RpFnLog {
                 });
             }
         }
-        EventRequest {
+        DbEventRequest {
             table_name,
             event_type: self.trig_type,
             id_value: true,
             pks,
-            optional_caller: Some(event_request::OptionalCaller::CallBy(node_id)),
+            optional_caller: Some(db_event_request::OptionalCaller::CallBy(node_id)),
         }
     }
 }

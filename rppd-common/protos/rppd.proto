@@ -1,0 +1,44 @@
+/*%LPH%*/
+
+syntax = "proto3";
+
+package rppd;
+import "rppc.proto";
+
+message SwitchRequest {
+	// master node ID to switch from
+	int32 node_id = 1;
+}
+
+message SwitchResponse {
+}
+
+
+message MessageRequest {
+	// key is the key, to put into the key-value store.
+	// To receive as messaging event should start with /q/ or /queue/
+	string key = 1;
+	// value is the value, in bytes, to associate with the key in the key-value store.
+	bytes value = 2;
+}
+
+message MessageResponse {
+}
+
+//The GRPC service to call from another node
+service RppdNode {
+	// required etcd feature and etcd messaging service implementation
+	rpc message(MessageRequest) returns (MessageResponse) {}
+
+	// forward a trigger call by master to node for fn execution
+	rpc event(rppc.DbEventRequest) returns (rppc.DbEventResponse) {}
+
+	// call from node to master to mark the function event completed
+	rpc complete(rppc.StatusRequest) returns (SwitchResponse) {}
+
+  // call from master to nodes to switch it to master on current master shutdown
+	rpc switch(SwitchRequest) returns (SwitchResponse) {}
+
+	// call between nodes
+	rpc status(rppc.StatusRequest) returns (rppc.StatusResponse) {}
+}

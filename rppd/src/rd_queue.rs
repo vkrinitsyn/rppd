@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
-
-use crate::gen::rg::{fn_status, FnStatus, status_request, status_response, StatusFnsResponse};
-use crate::gen::rg::status_request::FnLog;
+use rppd_common::gen::rppc::{fn_status, status_request, status_response, FnStatus, StatusFnsResponse};
 use crate::py::PyCall;
 use crate::rd_config::TopicDef;
 use crate::rd_fn::{RpFnId, RpFnLog};
@@ -169,8 +167,8 @@ impl QueueType {
             }
         }
         match fn_log {
-            FnLog::FnLogId(_) => Some(status_response::FnLog::Status(FnStatus { status: None })),
-            FnLog::Uuid(_) => Some(status_response::FnLog::Uuid(StatusFnsResponse { uuid }))
+            status_request::FnLog::FnLogId(_) => Some(status_response::FnLog::Status(FnStatus { status: None })),
+            status_request::FnLog::Uuid(_) => Some(status_response::FnLog::Uuid(StatusFnsResponse { uuid }))
         }
     }
 

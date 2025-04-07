@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn do_build(name: &str) -> io::Result<()> {
     let  file = format!("{}{}", name, EXT);
     let  dest = format!("src/{}/{}.rs", TEMP_GEN_DIR, name);
-    println!("building: {} to {}", file, dest);
+    println!("cargo:info=building: {} to {}", file, dest);
 
     let _ = tonic_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
@@ -56,10 +56,10 @@ fn do_build(name: &str) -> io::Result<()> {
             comment(&mut contents, "pub mod cfg_tabl", "#[derive(serde::");
 
             let _ = fs::write(dest.as_str(), contents)?;
-            println!("wrote: {}", dest);
+            println!("cargo:info=wrote: {}", dest);
         }
         Err(e) => {
-            println!("patching error: {} {}", dest, e);
+            println!("cargo:warning=patching error: {} {}", dest, e);
         }
     }
     Ok(())

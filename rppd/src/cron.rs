@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use chrono::{DateTime, Utc};
 use cron_parser::ParseError;
-use shim::Config;
+use shims::Config;
 use sqlx::{Pool, Postgres};
+use rppd_common::gen::rppc::DbEventRequest;
 use crate::arg_config::ArgConfig;
-use crate::gen::rg::EventRequest;
 use crate::rd_config::Cluster;
 
 pub(crate) const SELECT_CRON: &str = "select id, fn_id, cron, column_name, column_value, cadence, timeout_sec, started_at, finished_at, error_msg from %SCHEMA%.rppd_cron";
@@ -155,7 +155,7 @@ impl Cluster {
     }
 
     /// cron load on start OR reload on event
-    pub(crate) async fn reload_cron(&self, request: &Option<EventRequest>) -> Result<(), String>  {
+    pub(crate) async fn reload_cron(&self, request: &Option<DbEventRequest>) -> Result<(), String>  {
         let mut cron = self.cron.write().await;
         cron.reload(&self.cfg.schema, self.db()).await
     }

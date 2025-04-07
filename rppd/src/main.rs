@@ -23,13 +23,12 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::Sender;
 use tonic::transport::Server;
 
-use crate::gen::rg::grpc_server::{Grpc, GrpcServer};
-use crate::gen::rg::SwitchRequest;
+use rppd_common::gen::rppd::rppd_node_server::*;
+use rppd_common::gen::rppd::SwitchRequest;
 use crate::rd_config::Cluster;
 
 mod arg_config;
 
-mod gen;
 mod rd_config;
 mod rd_fn;
 mod rd_queue;
@@ -93,7 +92,7 @@ async fn main() -> Result<(), String> {
 
             tokio::spawn(async move {
                 match Server::builder()
-                    .add_service(GrpcServer::new(srv))
+                    .add_service(RppdNodeServer::new(srv))
                     .serve(adr) // .serve_with_incoming_shutdown(uds_stream, rx.map(drop) )
                     .await {
                     Ok(()) => {

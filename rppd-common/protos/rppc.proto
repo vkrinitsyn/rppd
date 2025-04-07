@@ -2,17 +2,16 @@
 
 syntax = "proto3";
 
-package rg;
+package rppc;
 
 enum DbAction {
 	UPDATE = 0;
 	INSERT = 1;
 	DELETE = 2;
 	TRUNCATE = 3;
-	DUAL = 4;
 }
 
-message EventRequest {
+message DbEventRequest {
 	// The name includes schema, i.e.: schema.table
 	string table_name = 1;
 	DbAction event_type = 2;
@@ -48,7 +47,7 @@ message PkColumn {
 	}
 }
 
-message EventResponse {
+message DbEventResponse {
 	bool saved = 1;
 	// needs to call again with column name data
 	repeated PkColumn repeat_with = 2;
@@ -111,29 +110,4 @@ message StatusResponse {
 		FnStatus status = 6;
 		StatusFnsResponse uuid = 7;
 	}
-}
-
-message SwitchRequest {
-	// master node ID to switch from
-	int32 node_id = 1;
-}
-
-message SwitchResponse {
-
-}
-
-//The GRPC service
-service Grpc {
-  // call by trigger or by master
-	rpc event(EventRequest) returns (EventResponse) {}
-
-  // call between nodes
-	rpc status(StatusRequest) returns (StatusResponse) {}
-
-  // call from node to master to mark the function event completed
-	rpc complete(StatusRequest) returns (SwitchResponse) {}
-
-  // call from master to nodes to switch it to master on current master shutdown
-	rpc switch(SwitchRequest) returns (SwitchResponse) {}
-
 }

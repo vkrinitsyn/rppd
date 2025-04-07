@@ -17,14 +17,11 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tonic::codegen::Body;
 use tonic::transport::{Channel, Endpoint};
 use uuid::Uuid;
-
+use rppd_common::gen::rppc::pk_column::PkValue::{BigintValue, IntValue};
+use rppd_common::gen::rppc::{status_request, DbEventRequest, PkColumn, StatusRequest};
+use rppd_common::gen::rppd::rppd_node_client::RppdNodeClient;
 use crate::arg_config::*;
 use crate::cron::{CronContext, RpFnCron};
-use crate::gen::rg::*;
-use crate::gen::rg::*;
-use crate::gen::rg::grpc_client::GrpcClient;
-use crate::gen::rg::grpc_server::Grpc;
-use crate::gen::rg::pk_column::PkValue::{BigintValue, IntValue};
 use crate::py::PyContext;
 use crate::rd_fn::*;
 use crate::rd_monitor::ClusterStat;
@@ -62,9 +59,9 @@ impl RpHost {
         format!("{} {}", SELECT.replace("%SCHEMA%", schema.as_str()), condition)
     }
 
-    pub(crate) async fn connect(&self) -> Result<Mutex<GrpcClient<Channel>>, String> {
+    pub(crate) async fn connect(&self) -> Result<Mutex<RppdNodeClient<Channel>>, String> {
         let path = format!("http://{}", self.host);
-        GrpcClient::connect(Duration::from_millis(TIMEOUT_MS),
+        RppdNodeClient::connect(Duration::from_millis(TIMEOUT_MS),
                             Endpoint::from_str(path.as_str())
                                 .map_err(|e| format!("connecting to {} {}", path, e))?)
             .await
@@ -118,7 +115,7 @@ pub(crate) struct Cluster {
     pub(crate) stat: Arc<RwLock<ClusterStat>>,
 
     /// connections to nodes
-    pub(crate) node_connections: Arc<RwLock<BTreeMap<i32, Result<Mutex<GrpcClient<Channel>>, String>>>>,
+    pub(crate) node_connections: Arc<RwLock<BTreeMap<i32, Result<Mutex<RppdNodeClient<Channel>>, String>>>>,
 
     /// connections to nodes, mostly use by master
     /// host to node_id
@@ -163,7 +160,7 @@ impl Cluster {
 
 
     #[inline]
-    pub(crate) async fn reload_hosts(&self, x: &EventRequest) -> Result<(), String> {
+    pub(crate) async fn reload_hosts(&self, x: &DbEventRequest) -> Result<(), String> {
         let sql = RpHost::select(&self.cfg.schema, "active_since is not null");
         let sql = if x.pks.len() == 0 { sql } else { format!("{} and {}", sql, make_sql_cnd(&x.pks)) };
         let mut r = sqlx::query_as::<_, RpHost>(sql.as_str());
@@ -217,7 +214,7 @@ impl Cluster {
 
     /// load all or reload one or remove one function, include load/remove fs_logs
     #[inline]
-    pub(crate) async fn reload_fs(&self, x: &Option<EventRequest>) -> Result<(), String> {
+    pub(crate) async fn reload_fs(&self, x: &Option<DbEventRequest>) -> Result<(), String> {
         let sql = SELECT_FN.replace("%SCHEMA%", self.cfg.schema.as_str());
         let sql = if x.is_none() || x.as_ref().unwrap().pks.len() == 0 { sql } else {
             format!("{} where {}", sql, make_sql_cnd(&x.as_ref().unwrap().pks))
@@ -371,7 +368,7 @@ impl Cluster {
     /// synchroniously on client DB transaction store log, if configured
     // TODO if requested from master, than perform queueing
     #[inline]
-    pub(crate) async fn prepare(&self, r: &EventRequest) -> Result<ScheduleResult, String> {
+    pub(crate) async fn prepare(&self, r: &DbEventRequest) -> Result<ScheduleResult, String> { 
         let mut fn_ids: BTreeSet<i32> = BTreeSet::new();
         if let Some(topics) = self.fn_tt.read().await.get(&r.table_name) {
             for topic in topics {
@@ -423,7 +420,7 @@ impl Cluster {
                 }
             }
         }
-        if pkk.len() > 0 {
+        if pkk.len() > 0 { // TODO FIXME now why  
             return Ok(ScheduleResult::Repeat(pkk));
         }
 
@@ -579,7 +576,7 @@ impl Cluster {
                             .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url(), e)) {
                             Ok(p) => p,
                             Err(e) => {
-                                // TODO write error
+                                // TODO write error 
                                 println!("update_err {}", e);
                                 f.update_err(e, self.db(), &self.cfg.schema).await;
                                 // let _ = self.sender.send(Some(f)).await; // re-queing
@@ -608,6 +605,7 @@ impl Cluster {
                                  Ok(_) => "OK".to_string(),
                                  Err(e) => e.clone(),
                              });
+                    
                     let sec = started.elapsed().as_secs();
                     f.update(sec, r.err(), db, &schema).await;
                     exec.write().await.push_front(p);
@@ -637,7 +635,6 @@ impl Cluster {
             match self.pick_node().await {
                 None => {
                     if self.max_db_connections.load(Ordering::Relaxed) > self.max_context.load(Ordering::Relaxed) {
-                        print!("re-send q2");
                         let _ = self.sender.send(Some(l)).await; // queueing()
                     } else {
                         self.queue.write().await.put_one(l, topic, fn_id, false);

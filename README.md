@@ -9,9 +9,11 @@ https://grpc.io/docs/protoc-installation/
 
 
 ### Build
-To build the project
+To build the project requirements
 ```shell
-./make.sh
+git clone https://github.com/lupko/etcd3-client.git
+pip install .
+pip install typing-extensions
 ```
 
 
@@ -40,6 +42,8 @@ cargo install cargo-pgrx --force && cargo pgrx init
 - No cluster leader election, but whoever be able to safe and undoubted updated self as master on configuration table. 
 
 ![topics](rppd%20schema.png)
+
+![queue](arch.jpg)
 
 ## Usage
 
@@ -96,7 +100,7 @@ DB.commit()
 create table if not exists test_source (id serial primary key, input text);
 create table if not exists test_sink (id serial primary key, data text);
 \set code `cat test_fn.py`
-insert into rppd_function (code, checksum, schema_table, topic, verbose_debug) values (:'code', 'na', 'public.test_source', '.id', true);
+insert into rppd_function (code, checksum, schema_table, topic, verbose_debug, cleanup_logs_min) values (:'code', 'na', 'public.test_source', '.id', true, 100);
 CREATE TRIGGER test_src_event AFTER INSERT OR UPDATE OR DELETE ON test_source FOR EACH ROW EXECUTE PROCEDURE rppd_event();
 insert into test_source (input) values ('test input');
 select * from test_sink;
@@ -119,16 +123,9 @@ if len(input) > 0:
 ### Core features and improvements 
 - Connect to multiple DB (rw/ro - replica)
 - Python function code sign, approve and verify on call
-- Monitoring cadence and hardware with email notification
+- Monitoring cadence
 - Cleanup saved Python function logs
 - Test multiple nodes
 
-### Cloud integration 
-- RESTapi/PubSub/ServiceBus to trigger events
-- OpenTelemetry logging integration like Appins  
 - Keyvault integration for a Database connections
 
-
-git clone https://github.com/lupko/etcd3-client.git
-pip install .
-pip install typing-extensions
