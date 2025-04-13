@@ -2,27 +2,29 @@
 
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use rust_embed::RustEmbed;
-use sqlx::{Database, Pool, Postgres};
+use slog::{error, info, warn, Logger};
+use sqlx::{Pool, Postgres};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tonic::codegen::Body;
+use tonic::Request;
 use tonic::transport::{Channel, Endpoint};
 use uuid::Uuid;
-use rppd_common::gen::rppc::pk_column::PkValue::{BigintValue, IntValue};
-use rppd_common::gen::rppc::{status_request, DbEventRequest, PkColumn, StatusRequest};
-use rppd_common::gen::rppd::rppd_node_client::RppdNodeClient;
+use rppd_common::protogen::rppc::pk_column::PkValue::*;
+use rppd_common::protogen::rppc::{status_request, DbAction, DbEventRequest, PkColumn, StatusRequest};
+use rppd_common::protogen::rppd::MessageRequest;
+use rppd_common::protogen::rppd::rppd_node_client::RppdNodeClient;
+use rppd_common::protogen::rppd::rppd_node_server::RppdNode;
 use crate::arg_config::*;
-use crate::cron::{CronContext, RpFnCron};
+use crate::cron::CronContext;
 use crate::py::PyContext;
+use crate::rd_etcd::EtcdConnector;
 use crate::rd_fn::*;
 use crate::rd_monitor::ClusterStat;
 use crate::rd_queue::QueueType;
@@ -90,9 +92,9 @@ pub(crate) type HostType = String;
 
 
 #[derive(Clone)]
-pub(crate) struct Cluster {
+pub struct RppdNodeCluster {
     /// parsed configs
-    pub(crate) cfg: ArgConfig,
+    pub(crate) cfg: RppdConfig,
     /// is the instance play master, receive trigger calls, schedule and call others
     pub(crate) master: Arc<AtomicBool>,
     /// is the node loaded all logs
@@ -124,6 +126,12 @@ pub(crate) struct Cluster {
     /// common queue to trigger bg dispatcher
     pub(crate) sender: Sender<Option<RpFnLog>>,
 
+    /// common queue to trigger bg dispatcher
+    pub(crate) kv_sender: Sender<MessageRequest>,
+
+    /// queue(tablename) -> watcher_id
+    pub(crate) watchers: Arc<RwLock<HashMap<SchemaTableType, WatcherW>>>,
+
     /// Python functions execution by fn id
     /// internal fn topics and queues
     pub(crate) fns: Arc<RwLock<BTreeMap<i32, RpFn>>>,
@@ -141,6 +149,16 @@ pub(crate) struct Cluster {
     pub(crate) queue: Arc<RwLock<QueueType>>,
 
     pub(crate) cron: Arc<RwLock<CronContext>>,
+    pub(crate) etcd: Arc<RwLock<EtcdConnector>>,
+    pub(crate) log: Logger,
+}
+#[cfg(feature = "etcd-external")]
+pub(crate) type WatcherW = etcd_client::Watcher;
+
+#[cfg(not(feature = "etcd-external"))]
+pub(crate) struct  WatcherW {
+    pub(crate) sender: Sender<etcd::etcdpb::etcdserverpb::WatchRequest>,
+    pub(crate) watch_id: etcd::cluster::WatcherId,
 }
 
 #[inline]
@@ -153,7 +171,7 @@ fn make_sql_cnd(input: &Vec<PkColumn>) -> String {
     sql
 }
 
-impl Cluster {
+impl RppdNodeCluster {
     pub(crate) fn db(&self) -> Pool<Postgres> {
         self.db.clone()
     }
@@ -170,6 +188,7 @@ impl Cluster {
                 match x {
                     IntValue(x) => { r = r.bind(*x); }
                     BigintValue(x) => { r = r.bind(*x); }
+                    StringValue(x) => {r = r.bind(x.clone());}
                 }
             }
         }
@@ -187,7 +206,7 @@ impl Cluster {
                 if n.active_since.is_none() { // remove?
                     //
                 }
-                let mut nodes = self.nodes.write().await;
+                let nodes = self.nodes.read().await;
                 match nodes.get(&n.id) {
                     None => {
                         self.node_connections.write().await.insert(n.id.clone(), n.connect().await);
@@ -196,7 +215,7 @@ impl Cluster {
                     Some(nx) => { // check if node changed
                         if nx.host != n.host {
                             if let Some(nx) = self.node_connections.write().await.insert(n.id.clone(), n.connect().await) {
-                                if let Ok(nx) = nx {
+                                if let Ok(_nx) = nx {
                                     // nx.lock().close()
                                 }
                             }
@@ -227,6 +246,7 @@ impl Cluster {
                     match pk {
                         IntValue(x) => { r = r.bind(*x); }
                         BigintValue(x) => { r = r.bind(*x); }
+                        StringValue(x) => {r = r.bind(x.clone());}
                     }
                 }
             }
@@ -263,11 +283,10 @@ impl Cluster {
                             submap.insert(RpFnId::fromf(&f));
                         }
                     }
-                    // .insert(f.topic.clone(), f.id.clone())
-                    map.insert(f.id.clone(), f);
+                    map.insert(f.id.clone(), f.watch_init(&self).await);
                 }
                 Some(fx) => {
-                    fx.merge(f, &self);
+                    fx.merge(f, &self).await;
                 }
             }
         }
@@ -278,11 +297,14 @@ impl Cluster {
 
 
     /// init
-    pub(crate) async fn init(c: ArgConfig) -> Result<Self, String> {
+    pub async fn init(c: RppdConfig,
+                      #[cfg(feature = "etcd-provided")] etcd: etcd::cluster::EtcdNode,
+                      log: Logger
+    ) -> Result<Self, String> {
         let pool = PgPoolOptions::new()
             .max_connections(1)  // use only on init
             .connect(c.db_url().as_str()).await
-            .map_err(|e| format!("Connection error to: {}", c.db_url()))?;
+            .map_err(|e| format!("Connection error to: {} {}", c.db_url(), e))?;
         // getting cluster
         let mut nodes = BTreeMap::new();
         let mut node_connections = BTreeMap::new();
@@ -301,7 +323,7 @@ impl Cluster {
             if n.master.unwrap_or(false) {
                 master_id = n.id;
             }
-            if n.host_name == c.this {
+            if n.host_name == c.name {
                 found_self = true;
                 id = n.id;
                 found_self_master = n.master.unwrap_or(false);
@@ -315,9 +337,18 @@ impl Cluster {
             }
         }
 
-        let (sender, mut rsvr) = mpsc::channel(c.max_queue_size);
+        let (sender, rsvr) = mpsc::channel(c.max_queue_size);
+        let (kv_sender, kv_rsvr) = mpsc::channel(c.max_queue_size);
 
-        let cluster = Cluster {
+        #[cfg(feature = "etcd-embeded")]
+        let etcd = EtcdConnector::init(&c, &log).await;
+        #[cfg(feature = "etcd-provided")]
+        let etcd = EtcdConnector::new(etcd, &c, &log).await;
+        #[cfg(feature = "etcd-external")]
+        let etcd = EtcdConnector::connect(&c, &log).await;
+
+
+        let cluster = RppdNodeCluster {
             cfg: c,
             master: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
@@ -338,20 +369,25 @@ impl Cluster {
             fn_id: Arc::new(Default::default()),
             exec: Arc::new(Default::default()),
             cron: Arc::new(Default::default()),
+            etcd: Arc::new(RwLock::new(etcd)),
+            kv_sender,
+            watchers: Arc::new(Default::default()),
+            log,
         };
 
-        cluster.run(rsvr, r_len == 0 || !found_self, !master && !found_self_master).await;
+        cluster.run(rsvr, kv_rsvr, r_len == 0 || !found_self, !master && !found_self_master).await;
         println!("Cluster instance created");
         Ok(cluster)
     }
 
     /// prepare to run code on startup and background
-    async fn run(&self, mut rsvr: Receiver<Option<RpFnLog>>, self_register: bool, self_master: bool) {
+    async fn run(&self, mut rsvr: Receiver<Option<RpFnLog>>, mut kv_rsvr: Receiver<MessageRequest>, self_register: bool, self_master: bool) {
         let ctx = self.clone();
         let ctxm = self.clone();
 
         tokio::spawn(async move { // will execute as background, but will try to connect to this host
             if let Err(e) = ctx.start_bg(self_register, self_master).await {
+                // TODO log
                 eprintln!("Failed to start:{}", e);
                 std::process::exit(11);
             }
@@ -362,89 +398,108 @@ impl Cluster {
                 ctx.execute(ci).await
             }
         });
+        let ctx = self.clone();
+        tokio::spawn(async move {
+            while let Some(m) = kv_rsvr.recv().await {
+                if let Err(e) = ctx.message(Request::new(m)).await {
+                    error!(ctx.log, "{}", e);
+                }
+            }
+        });
+    }
+
+    pub(crate) async fn check_fn(&self, table_name: &String) -> BTreeMap<i32, RpFnId> {
+        let mut fn_ids = BTreeMap::new();
+        if let Some(topics) = self.fn_tt.read().await.get(table_name) {
+            for topic in topics {
+                if let Some(t) = self.fn_id.read().await.get(topic) {
+                    for fid in t {
+                        fn_ids.insert(fid.id, fid.clone());
+                    }
+                }
+            }
+        };
+        fn_ids
     }
 
     /// find topic, fnb_id and node_id by table
     /// synchroniously on client DB transaction store log, if configured
     // TODO if requested from master, than perform queueing
     #[inline]
-    pub(crate) async fn prepare(&self, r: &DbEventRequest) -> Result<ScheduleResult, String> { 
-        let mut fn_ids: BTreeSet<i32> = BTreeSet::new();
-        if let Some(topics) = self.fn_tt.read().await.get(&r.table_name) {
-            for topic in topics {
-                if let Some(t) = self.fn_id.read().await.get(topic) {
-                    for fid in t {
-                        fn_ids.insert(fid.id);
-                    }
-                }
-            }
-        };
-        if fn_ids.len() == 0 {
-            return Ok(ScheduleResult::None);
-        }
-
-        let mut pkk = vec![];
-        let mut logs = vec![];
+    pub(crate) async fn prepare(&self, fn_ids: BTreeMap<i32, RpFnId>, pks: &Vec<PkColumn>, event: DbAction, value: &Option<Vec<u8>>)
+        -> Result<ScheduleResult, String> {
+        debug_assert!(fn_ids.len() > 0);
+        let mut non_pk_column = vec![];
+        let mut fn_logs = vec![];
         let mut trig_value = HashMap::new();
-        for p in &r.pks {
+        for p in pks {
             if let Some(pk) = &p.pk_value {
                 trig_value.insert(p.column_name.clone(), match pk {
                     IntValue(v) => v.to_string(),
-                    BigintValue(v) => v.to_string()
+                    BigintValue(v) => v.to_string(),
+                    StringValue(v) => v.clone(),
                 });
             }
         }
         let node_id = self.node_id.load(Ordering::Relaxed);
+
         let map = self.fns.read().await;
-        for fn_id in &fn_ids {
+        for (fn_id, rn_fn_id) in &fn_ids {
             if let Some(f) = map.get(fn_id) {
                 let is_dot = f.is_dot();
+
                 if is_dot && !trig_value.contains_key(&f.topic.clone().split_off(1)) {
-                    pkk.push(f.to_repeat_result());
+                    non_pk_column.push(f.to_repeat_result());
                 }
-                if pkk.len() == 0 {
-                    logs.push((RpFnLog {
+
+                if non_pk_column.len() == 0 {
+                    fn_logs.push(RpFnLog {
                         id: 0,
                         node_id: node_id.clone(),
                         fn_id: f.id,
                         took_sec: None,
                         uuid: None,
-                        trig_type: r.event_type,
+                        value: value.clone(), // None for db trigger, one
+                        rn_fn_id: Some(rn_fn_id.clone()),
+                        trig_type: event as i32,
                         trig_value: Some(sqlx::types::Json::from(trig_value.clone())),
                         started_at: Utc::now(),
                         error_msg: None,
                         fn_idp: Some(RpFnId::fromf(f)),
                         started: Some(Instant::now()),
-                    }, f.cleanup_logs_min, is_dot)
+                    }
                     );
                 }
             }
         }
-        if pkk.len() > 0 { // TODO FIXME now why  
-            return Ok(ScheduleResult::Repeat(pkk));
+
+        if non_pk_column.len() > 0 {
+            return Ok(ScheduleResult::Repeat(non_pk_column));
         }
 
-        let mut res = Vec::with_capacity(logs.len());
-        for (fl, cleanup_logs_min, is_dot) in logs {
-            if cleanup_logs_min > 0 {
-                let r = if is_dot {
-                    sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&self.cfg.schema).as_str())
-                        .bind(fl.node_id)
-                        .bind(fl.fn_id)
-                        .bind(fl.trig_type)
-                        .bind(fl.trig_value.clone())
-                        .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
+        let mut res = Vec::with_capacity(fn_logs.len());
+        for fl in fn_logs {
+            if let Some(ref rn) = fl.rn_fn_id {
+                if rn.save {
+                    let r = if rn.trig_value {
+                        sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&self.cfg.schema).as_str())
+                            .bind(fl.node_id)
+                            .bind(fl.fn_id)
+                            .bind(fl.trig_type)
+                            .bind(fl.trig_value.clone())
+                            .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
+                    } else {
+                        sqlx::query_scalar::<_, i64>(RpFnLog::insert(&self.cfg.schema).as_str())
+                            .bind(fl.node_id)
+                            .bind(fl.fn_id)
+                            .bind(fl.trig_type)
+                            .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
+                    };
+                    res.push(RpFnLog { id: r, ..fl });
                 } else {
-                    sqlx::query_scalar::<_, i64>(RpFnLog::insert(&self.cfg.schema).as_str())
-                        .bind(fl.node_id)
-                        .bind(fl.fn_id)
-                        .bind(fl.trig_type)
-                        .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
+                    res.push(RpFnLog { uuid: Some(Uuid::new_v4()), ..fl });
                 };
-                res.push(RpFnLog { id: r, ..fl });
-            } else {
-                res.push(RpFnLog { uuid: Some(Uuid::new_v4()), ..fl });
-            };
+            }
         }
         Ok(ScheduleResult::Some(res))
     }
@@ -455,11 +510,11 @@ impl Cluster {
         let pool = self.db();
         let host = format!("{}:{}", self.cfg.bind, self.cfg.port);
         if insert {
-            println!("Self registering: {} by name: {} {}", host, self.cfg.this, if master { "as master" } else { "" });
+            println!("Self registering: {} by name: {} {}", host, self.cfg.name, if master { "as master" } else { "" });
             let sql = INSERT_HOST.replace("%SCHEMA%", &self.cfg.schema.as_str());
             let id = sqlx::query_scalar::<_, i32>(sql.as_str())
                 .bind(&host)
-                .bind(&self.cfg.this)
+                .bind(&self.cfg.name)
                 .bind(if master { Some(true) } else { None })
                 .fetch_one(&self.db()).await.map_err(|e| e.to_string())?;
 
@@ -469,7 +524,7 @@ impl Cluster {
         let id = self.node_id.load(Ordering::Relaxed);
 
         if !insert && master {
-            println!("Self mark as master: {} by name: {} ", host, self.cfg.this);
+            println!("Self mark as master: {} by name: {} ", host, self.cfg.name);
             let sql = UP_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
             if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
                 eprintln!("{}", e);
@@ -487,7 +542,7 @@ impl Cluster {
             self.master_id.store(id, Ordering::Relaxed);
         }
 
-        let sql = RpHost::select(&self.cfg.schema, "id = $1");
+        let _sql = RpHost::select(&self.cfg.schema, "id = $1");
 
         // load functions
         let _ = self.reload_fs(&None).await?;
@@ -553,7 +608,9 @@ impl Cluster {
                 }
             }
             // println!("re-send1");
-            self.sender.send(None).await;
+            if let Err(e) = self.sender.send(None).await {
+                warn!(self.log, "{}", e);
+            }
             return;
         }
 
@@ -572,14 +629,11 @@ impl Cluster {
                 }
                 let p = match c {
                     None => {
-                        let p = match PyContext::new(&fc, &self.cfg.db_url())
+                        let p = match self.new_py_context(&fc, &self.cfg.db_url()).await
                             .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url(), e)) {
                             Ok(p) => p,
                             Err(e) => {
-                                // TODO write error 
-                                println!("update_err {}", e);
-                                f.update_err(e, self.db(), &self.cfg.schema).await;
-                                // let _ = self.sender.send(Some(f)).await; // re-queing
+                                f.update_err(e, self.db(), &self.cfg.schema, &self.log).await;
                                 return;
                             }
                         };
@@ -597,20 +651,30 @@ impl Cluster {
                 let queue = self.sender.clone();
                 let fc = fc.clone();
                 let run = self.running.clone();
+                #[cfg(not(feature = "etcd-external"))]
+                let etcd = self.etcd.clone();
+                let log = self.log.clone();
                 tokio::spawn(async move {
                     let r = p.lock().await.invoke(&f, &fc);
 
-                    println!("executed {}#{} {}", fc.schema_table, fc.topic,
-                             match &r {
-                                 Ok(_) => "OK".to_string(),
-                                 Err(e) => e.clone(),
-                             });
+                    #[cfg(not(feature = "etcd-external"))]
+                    if fc.is_etcd_queue() && fc.queue {
+                        etcd.read().await.aks(&fc.schema_table).await;
+                    }
+
+                    match &r {
+                        Ok(_) => info!(log, "executed OK#{} {}", fc.schema_table, fc.topic),
+                        Err(e) => error!(log, "executed notOK#{} {} {}", fc.schema_table, fc.topic, e),
+                    }
                     
                     let sec = started.elapsed().as_secs();
                     f.update(sec, r.err(), db, &schema).await;
                     exec.write().await.push_front(p);
                     run.fetch_sub(1, Ordering::Relaxed);
-                    queue.send(Some(RpFnLog { took_sec: Some(sec as i32), ..f })).await;
+                    if let Err(e) =
+                        queue.send(Some(RpFnLog { took_sec: Some(sec as i32), ..f })).await {
+                        warn!(log, "{}", e);
+                    }
                 });
             }
         }

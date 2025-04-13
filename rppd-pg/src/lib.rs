@@ -15,10 +15,10 @@ use pgrx::WhoAllocated;
 use tokio::runtime::{Builder, Runtime};
 use tonic::transport::{Channel, Endpoint};
 
-use rppd_common::gen::rppc::{DbAction, DbEventRequest, DbEventResponse, PkColumn, PkColumnType, StatusRequest};
-use rppd_common::gen::rppc::pk_column::PkValue::{BigintValue, IntValue};
-use rppd_common::gen::rppc::status_request::FnLog;
-use rppd_common::gen::rppg::rppd_trigger_client::RppdTriggerClient;
+use rppd_common::protogen::rppc::{DbAction, DbEventRequest, DbEventResponse, PkColumn, PkColumnType, StatusRequest};
+use rppd_common::protogen::rppc::pk_column::PkValue::{BigintValue, IntValue};
+use rppd_common::protogen::rppc::status_request::FnLog;
+use rppd_common::protogen::rppg::rppd_trigger_client::RppdTriggerClient;
 
 
 pgrx::pg_module_magic!();

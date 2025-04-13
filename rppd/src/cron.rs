@@ -1,12 +1,10 @@
+#![allow(unused_variables, dead_code)]
+
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
 use chrono::{DateTime, Utc};
-use cron_parser::ParseError;
-use shims::Config;
 use sqlx::{Pool, Postgres};
-use rppd_common::gen::rppc::DbEventRequest;
-use crate::arg_config::ArgConfig;
-use crate::rd_config::Cluster;
+use rppd_common::protogen::rppc::DbEventRequest;
+use crate::rd_config::RppdNodeCluster;
 
 pub(crate) const SELECT_CRON: &str = "select id, fn_id, cron, column_name, column_value, cadence, timeout_sec, started_at, finished_at, error_msg from %SCHEMA%.rppd_cron";
 pub type CronDTType = DateTime<Utc>;
@@ -120,7 +118,7 @@ impl RpFnCron {
 
 }
 
-impl Cluster {
+impl RppdNodeCluster {
     /// periodic (every second) spawn a job check, call by monitoring loop
     /// the job itself a lightweight trigger to update a target table which will a spawn a new transaction as Python function
     pub(crate) async fn cronjob(&self) {
@@ -137,6 +135,8 @@ impl Cluster {
                 }
             }
             for (id, dt) in jobs {
+
+                #[allow(unused_mut)]
                 if let Some(crontab) = if let Some(mut c) = cron.crons.get_mut(&id) {
                     let target = match self.fns.read().await.get(&c.fn_id) {
                         None => { continue; }
@@ -183,7 +183,7 @@ impl CronContext {
     /// cleanup
      #[inline]
    pub(crate) async fn reload(&mut self, schema: &String, db: Pool<Postgres>) -> Result<(), String> {
-        let mut cl = sqlx::query_as::<_, RpFnCron>(SELECT_CRON.replace("%SCHEMA%", schema.as_str()).as_str())
+        let cl = sqlx::query_as::<_, RpFnCron>(SELECT_CRON.replace("%SCHEMA%", schema.as_str()).as_str())
             .fetch_all(&db).await.map_err(|e| e.to_string())?;
 
         self.crons.clear();

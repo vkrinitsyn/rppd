@@ -1,13 +1,17 @@
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use shims::Histogram;
+use slog::error;
 use tokio::time::sleep;
-use rppd_common::gen::rppc::{StatusRequest, StatusResponse};
-use crate::rd_config::{Cluster, DWN_MASTER, MAX_ERRORS, SELECT_MASTER, TIMEOUT_MS, UP_MASTER};
+use rppd_common::protogen::rppc::{StatusRequest, StatusResponse};
+use crate::rd_config::{RppdNodeCluster, DWN_MASTER, MAX_ERRORS, SELECT_MASTER, TIMEOUT_MS, UP_MASTER};
+use crate::rd_fn::DELETE_LOG;
 
 #[derive(Clone)]
+#[allow(unused_variables, dead_code)]
 pub(crate) struct ClusterStat {
     pub(crate) node_stat: BTreeMap<i32, NodeStat>,
     sort: BTreeMap<u64, BTreeSet<i32>>,
@@ -41,6 +45,7 @@ impl Default for NodeStat {
 }
 
 #[derive(Clone)]
+#[allow(unused_variables, dead_code)]
 pub(crate) struct NodeStat {
     node_id: i32,
     /// zero is better
@@ -140,7 +145,7 @@ impl PartialOrd for NodeStat {
 }
 */
 
-impl Cluster {
+impl RppdNodeCluster {
 
     /// call by exec on master node
     pub(crate) async fn pick_node(&self) -> Option<i32> {
@@ -195,7 +200,7 @@ impl Cluster {
                                                 let mut stat = self.stat.write().await;
                                                 match stat.node_stat.get_mut(&id) {
                                                     None => {
-                                                        let mut s: NodeStat = NodeStat::new_from(r);
+                                                        let s: NodeStat = NodeStat::new_from(r);
                                                         stat.node_stat.insert(id.clone(), s);
                                                     }
                                                     Some(s) => {
@@ -208,7 +213,7 @@ impl Cluster {
                                             Err(e) => err = Some(e.to_string())
                                         }
                                     }
-                                    Err(e) => { // TODO if node in error, try to re-connect
+                                    Err(_e) => { // TODO if node in error, try to re-connect
                                     }
                                 }
                             }
@@ -258,6 +263,7 @@ impl Cluster {
                 self.become_master(prev_db_master).await;
             }
             self.cronjob().await;
+            self.cleanup_fn_logs().await;
             let _ = sleep(Duration::from_millis(5*TIMEOUT_MS)).await;
         }
     }
@@ -269,14 +275,14 @@ impl Cluster {
         let sql_up = UP_MASTER.replace("%SCHEMA%", self.cfg.schema.as_str());
 
         if let Some(master_id) = prev_db_master { // unregister previous master
-            if let Ok(ok) = sqlx::query(sql_dwn.as_str()).bind(master_id).execute(&self.db()).await {
+            if let Ok(_ok) = sqlx::query(sql_dwn.as_str()).bind(master_id).execute(&self.db()).await {
                 println!("removed previous load master from DB row ID = {}", master_id);
             }
         }
 
         let node_id = self.node_id.load(Ordering::Relaxed);
         match sqlx::query(sql_up.as_str()).bind(node_id).execute(&self.db()).await {
-            Ok(ok) => {
+            Ok(_ok) => {
                 self.master.store(true, Ordering::Relaxed);
                 self.master_id.store(node_id, Ordering::Relaxed);
             }
@@ -284,6 +290,16 @@ impl Cluster {
                 eprintln!("marking self as master: {}", e);
             }
         }
+    }
+
+    /// TODO delete old records
+    pub(crate) async fn cleanup_fn_logs(&self) {
+        let sql = DELETE_LOG.replace("%SCHEMA%", self.cfg.schema.as_str());
+
+        if let Err(e) = sqlx::query(sql.as_str()).execute(&self.db()).await {
+            error!(self.log, "Cleanup logs by [{}] {}", sql, e);
+        }
+
     }
 }
 

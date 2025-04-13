@@ -1,29 +1,46 @@
+#![allow(unused_variables, dead_code)]
+
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use tonic::{Request, Response, Status};
-use rppd_common::gen::rppc::{DbEventRequest, DbEventResponse, PkColumn, StatusRequest, StatusResponse};
-use rppd_common::gen::rppd::rppd_node_server::RppdNode;
-use rppd_common::gen::rppd::{MessageRequest, MessageResponse, SwitchRequest, SwitchResponse};
-use rppd_common::gen::rppg::rppd_trigger_server::RppdTrigger;
+use rppd_common::protogen::rppc::{DbAction, DbEventRequest, DbEventResponse, PkColumn, PkColumnType, StatusRequest, StatusResponse};
+use rppd_common::protogen::rppc::pk_column::PkValue;
+use rppd_common::protogen::rppd::rppd_node_server::RppdNode;
+use rppd_common::protogen::rppd::{MessageRequest, MessageResponse, SwitchRequest, SwitchResponse};
+use rppd_common::protogen::rppg::rppd_trigger_server::RppdTrigger;
 use crate::arg_config::{CFG_CRON_TABLE, CFG_FN_TABLE, CFG_TABLE};
-use crate::cron::RpFnCron;
-use crate::rd_config::Cluster;
+use crate::rd_config::RppdNodeCluster;
 use crate::rd_fn::RpFnLog;
 
 pub(crate) enum ScheduleResult {
-    /// no need schedule
-    None,
+    // fn not found, no need schedule 
+    // None,
     /// Ok
     Some(Vec<RpFnLog>),
-    /// repeat a call with column name
+    /// repeat a call from DB with column's data taken by name
     Repeat(Vec<PkColumn>),
 }
 
 #[async_trait]
-impl RppdNode for Cluster {
+impl RppdNode for RppdNodeCluster {
     async fn message(&self, request: Request<MessageRequest>) -> Result<Response<MessageResponse>, Status> {
-        Err(Status::unimplemented("unimplemented"))
+        let request = request.into_inner();
+        let fns = self.check_fn(&request.key).await;
+        if fns.len() > 0 {
+            if let ScheduleResult::Some(fn_logs) = self.prepare(fns, &vec![
+                PkColumn {
+                    column_name: "KEY".to_string(),
+                    column_type: PkColumnType::String as i32,
+                    pk_value: Some(PkValue::StringValue(request.key.clone())),
+                }
+            ], DbAction::Dual, &Some(request.value)).await.map_err(|e| Status::internal(e))? {
+                for fn_log in fn_logs {
+                    let _ = self.queueing(fn_log, false).await; // build a queue
+                }
+            }
+        }
+        Ok(Response::new(MessageResponse { }))
     }
 
     async fn event(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
@@ -33,8 +50,10 @@ impl RppdNode for Cluster {
     ///
     async fn complete(&self, request: Request<StatusRequest>) -> Result<Response<SwitchResponse>, Status> {
         let _r = request.into_inner();
-        self.sender.send(None).await;
-        Ok(Response::new(SwitchResponse {}))
+        // TODO use r.fn_log
+        self.sender.send(None).await
+            .map(|_| Response::new(SwitchResponse {}))
+            .map_err(|e| Status::internal(e.to_string()))
     }
 
     async fn switch(&self, request: Request<SwitchRequest>) -> Result<Response<SwitchResponse>, Status> {
@@ -54,7 +73,7 @@ impl RppdNode for Cluster {
 }
 
 #[async_trait]
-impl RppdTrigger for Cluster {
+impl RppdTrigger for RppdNodeCluster {
     async fn event(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
         self.event_impl(request).await
     }
@@ -63,7 +82,8 @@ impl RppdTrigger for Cluster {
     }
 }
 
-impl Cluster {
+impl RppdNodeCluster {
+
     async fn event_impl(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
         let request = request.into_inner();
         if request.optional_caller.is_some() && self.master.load(Ordering::Relaxed) {
@@ -82,38 +102,38 @@ impl Cluster {
                 }
             };
         }
-
-        match self.prepare(&request).await.map_err(|e| Status::internal(e))? {
-            ScheduleResult::None => {
-                // no function for a trigger
-            }
-            ScheduleResult::Some(fn_logs) => {
-                for fn_log in fn_logs {
-                    let _ = self.queueing(fn_log, false).await; // build a queue
+        
+        let fns = self.check_fn(&request.table_name).await;
+        if fns.len() > 0 {
+            match self.prepare(fns, &request.pks, request.event_type(), &None).await.map_err(|e| Status::internal(e))? {
+                ScheduleResult::Some(fn_logs) => {
+                    for fn_log in fn_logs {
+                        let _ = self.queueing(fn_log, false).await; // build a queue
+                    }
+                }
+                ScheduleResult::Repeat(repeat_with) => {
+                    println!("re-requesting to repeat: {:?}", repeat_with);
+                    return Ok(Response::new(DbEventResponse { saved: false, repeat_with }));
                 }
             }
-            ScheduleResult::Repeat(repeat_with) => {
-                println!("re-requesting to repeat: {:?}", repeat_with);
-                return Ok(Response::new(DbEventResponse { saved: false, repeat_with }));
-            }
-        }
 
-        if request.table_name.starts_with(&self.cfg.schema) {
-            if request.optional_caller.is_none() {
-                // TODO broadcast to cluster, set optional_caller to this as master
-            }
+            if request.table_name.starts_with(&self.cfg.schema) {
+                if request.optional_caller.is_none() {
+                    // TODO broadcast to cluster, set optional_caller to this as master
+                }
 
-            if let Err(e) = if request.table_name.ends_with(CFG_TABLE) {
-                self.reload_hosts(&request).await
-            } else if request.table_name.ends_with(CFG_FN_TABLE) {
-                self.reload_fs(&Some(request)).await
-            } else if request.table_name.ends_with(CFG_CRON_TABLE) {
-                self.reload_cron(&Some(request)).await
-            } else { // if request.table_name.ends_with(CFG_FNL_TABLE) {
-                // no trigger should be there
-                Ok(())
-            } {
-                return Err(Status::internal(e));
+                if let Err(e) = if request.table_name.ends_with(CFG_TABLE) {
+                    self.reload_hosts(&request).await
+                } else if request.table_name.ends_with(CFG_FN_TABLE) {
+                    self.reload_fs(&Some(request)).await
+                } else if request.table_name.ends_with(CFG_CRON_TABLE) {
+                    self.reload_cron(&Some(request)).await
+                } else { // if request.table_name.ends_with(CFG_FNL_TABLE) {
+                    // no trigger should be there
+                    Ok(())
+                } {
+                    return Err(Status::internal(e));
+                }
             }
         }
 

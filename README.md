@@ -1,5 +1,16 @@
 # RPPD - Rust Python Postgres Discovery
 
+## Top features:
+
+- Etcd integration with either Rust implementation for message queue and valilla impl for topic notify
+- Cluster/Cloud oriented for horizontal scalling
+- Lightwight (but still with std lib)
+- Simple cofiguration
+- Protobuf with gRPC
+- Embeddable to use as lib in your project
+- i18n for message translation
+
+
 ## Build
 > [!IMPORTANT]
 The target platform is Linux! The key component is pxrg, a rust postgres trigger engine that does not support windows.
@@ -118,14 +129,11 @@ if len(input) > 0:
 ```
 
 
-## TODO
-
-### Core features and improvements 
-- Connect to multiple DB (rw/ro - replica)
-- Python function code sign, approve and verify on call
-- Monitoring cadence
+## TODO - features and improvements 
 - Cleanup saved Python function logs
-- Test multiple nodes
-
-- Keyvault integration for a Database connections
+- Connect to multiple DB (rw/ro - replica)
+- Monitoring cadence
+- OpenTelemetry integration
+- Python function code sign, approve and verify on call
+- Keyvault (secret) integration for a Database connections
 

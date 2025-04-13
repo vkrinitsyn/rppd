@@ -1,13 +1,14 @@
+#![allow(unused_variables, dead_code)]
+
 use std::mem::ManuallyDrop;
 use std::time::Instant;
 
-use pyo3::{Bound, IntoPy, Py, PyErr, PyObject, PyResult, Python};
-use pyo3::ffi::{_cstr_from_utf8_with_nul_checked, c_str};
+use pyo3::{IntoPyObject, Py, PyErr, PyObject, PyResult, Python};
 use pyo3::prelude::PyModule;
-use pyo3::types::{IntoPyDict, PyAnyMethods, PyDict};
+use pyo3::types::{IntoPyDict, PyAnyMethods};
 use uuid::Uuid;
 
-use crate::rd_config::TIMEOUT_MS;
+use crate::rd_config::{RppdNodeCluster, TIMEOUT_MS};
 use crate::rd_fn::{RpFn, RpFnLog};
 
 /// ManuallyDrop for PyModule and db: PyObject
@@ -28,6 +29,10 @@ impl Drop for PyContext {
             unsafe {
                 ManuallyDrop::drop(&mut self.py_rt);
                 ManuallyDrop::drop(&mut self.py_db);
+                ManuallyDrop::drop(&mut self.rt_etcd);
+                if let Ok(etcd) = &mut self.py_etcd {
+                    ManuallyDrop::drop(etcd);
+                }
             }
         });
     }
@@ -57,11 +62,12 @@ pub const ETCD: &str = "ETCD";
 pub const TOPIC: &str = "TOPIC";
 pub const TABLE: &str = "TABLE";
 pub const TRIG: &str = "TRIG";
+pub const VALUE: &str = "VALUE";
 
-impl PyContext {
+impl RppdNodeCluster {
     /// create Python runtime and DB connection
     #[inline]
-    pub(crate) fn new(f: &RpFn, db_url: &String) -> Result<PyContext, PyErr> {
+    pub(crate) async fn new_py_context(&self, f: &RpFn, db_url: &String) -> Result<PyContext, PyErr> {
         let module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
             Ok(PyModule::import(py, POSTGRES_PY)?.into())
         })?;
@@ -69,7 +75,7 @@ impl PyContext {
         // let libpq_kv = format!("host=localhost sslmode=disable user={} password={} dbname={}", username, password, db);
         let client: PyObject = Python::with_gil(|py| -> PyResult<_> {
             // Borrows a GIL-bound reference as PyAny. 
-            Ok(module.bind_borrowed(py).getattr("connect")?.call1((db_url, ))?.into())
+            Ok(module.bind_borrowed(py).getattr("connect")?.call1((db_url,))?.into())
         })?;
 
         let etcd_module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
@@ -91,7 +97,10 @@ impl PyContext {
             ltu: Instant::now(),
         })
     }
+}
 
+
+impl PyContext {
     #[inline]
     pub(crate) fn alive(&self) -> bool {
         self.ltu.elapsed().as_millis() < TIMEOUT_MS as u128
@@ -101,21 +110,25 @@ impl PyContext {
     
     pub(crate) fn invoke(&mut self, x: &RpFnLog, fc: &RpFn) -> Result<(), String> {
         Python::with_gil(|py| {
-            let mut locals = [
+            let locals = [
                 (DB, self.py_db.bind_borrowed(py)),
-                (TOPIC, fc.topic.clone().into_py(py).bind_borrowed(py)),
-                (TABLE, fc.schema_table.clone().into_py(py).bind_borrowed(py)),
-                (TRIG, x.trig_type.clone().into_py(py).bind_borrowed(py)),
+                (TOPIC, fc.topic.clone().into_pyobject(py)?.into_any().as_borrowed()),
+                (TABLE, fc.schema_table.clone().into_pyobject(py)?.into_any().as_borrowed()),
+                (TRIG, x.trig_type.clone().into_pyobject(py)?.into_any().as_borrowed()),
             ].into_py_dict(py)?;
             
             if let Some(pks) = &x.trig_value {
                 for (pk, pk_val) in pks.iter() {
-                    locals.set_item(pk.to_ascii_uppercase(), pk_val.into_py(py));
+                    let _ = locals.set_item(pk.to_ascii_uppercase(), pk_val.into_pyobject(py)?.into_any().as_borrowed())?;
                 }
             }
             
+            if let Some(pks) = &x.value {
+                let _ = locals.set_item(VALUE, pks.into_pyobject(py)?.into_any().as_borrowed())?;
+            }
+            
             if let Ok(e) = &self.py_etcd {
-                locals.set_item(ETCD, e.bind_borrowed(py));
+                let _ = locals.set_item(ETCD, e.bind_borrowed(py))?;
             }
             
             let res = py.run(fc.code()?.as_c_str(), None, Some(&locals));

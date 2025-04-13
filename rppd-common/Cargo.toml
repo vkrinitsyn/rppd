@@ -2,20 +2,20 @@
 name = "rppd-common"
 version = "0.2.1"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
-edition = "2021"
-description = "RPPD inclusing Trigger for Postgres"
+edition = "2024"
+description = "RPPD - protibuf types and services"
 
 [dependencies]
 
 async-trait = "^0.1"
-tonic = { version = "0.13.0", features = ["prost", "codegen"] }
-prost = { version = "0.13.5", features = ["default"] }
+tonic = { version = "^0.13", features = ["prost", "codegen"] }
+prost = { version = "^0.13", features = ["default"] }
 
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "^1.0", features = ["derive"] }
 
 [build-dependencies]
 tonic-build = { version = "^0.13", features = ["prost-build", "transport", "prost"]}
-protobuf = { version = "3.7.1", features = ["with-bytes"] }
+#protobuf = { version = "3.7.1", features = ["with-bytes"] }
 
 [profile.dev]
 panic = "unwind"

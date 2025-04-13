@@ -1,8 +1,5 @@
 /*%LPH%*/
-
 #![allow(warnings, unused, dead_code)]
-// #![allow(non_snake_case)]
-
 extern crate core;
 #[macro_use]
 extern crate slog;
@@ -10,62 +7,27 @@ extern crate slog;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
-
 use bb8_postgres::tokio_postgres::GenericClient;
-use i18n_embed::{
-	fluent::{fluent_language_loader, FluentLanguageLoader},
-	LanguageLoader,
-};
+
 use lazy_static::*;
 use lazy_static::lazy_static;
 use rust_embed::RustEmbed;
+use slog::Logger;
+use sloggers::Build;
+use sloggers::terminal::{Destination, TerminalLoggerBuilder};
+use sloggers::types::{Severity, SourceLocation};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::Sender;
 use tonic::transport::Server;
 
-use rppd_common::gen::rppd::rppd_node_server::*;
-use rppd_common::gen::rppd::SwitchRequest;
-use crate::rd_config::Cluster;
+use rppd_common::protogen::rppd::rppd_node_server::*;
+use rppd_common::protogen::rppd::SwitchRequest;
+use rppde::arg_config::RppdConfig;
+use rppde::{arg_config, fl};
+use rppde::rd_config::RppdNodeCluster;
 
-mod arg_config;
-
-mod rd_config;
-mod rd_fn;
-mod rd_queue;
-
-mod py;
-
-mod rd_rpc;
-mod cron;
-mod rd_monitor;
-
-#[derive(RustEmbed)]
-#[folder = "i18n/"]
-struct Localizations;
-
-type Queue = Sender<String>;
-
-lazy_static! {
-    static ref LANGUAGE_LOADER: FluentLanguageLoader = {
-		let loader: FluentLanguageLoader = fluent_language_loader!();
-		loader
-		.load_languages(&Localizations, &[loader.fallback_language().clone()])
-		.unwrap();
-		loader
-    };
-
-}
-
-#[macro_export]
-macro_rules! fl {
-    ($message_id:literal) => {{
-        i18n_embed_fl::fl!($crate::LANGUAGE_LOADER, $message_id)
-    }};
-
-    ($message_id:literal, $($args:expr),*) => {{
-        i18n_embed_fl::fl!($crate::LANGUAGE_LOADER, $message_id, $($args), *)
-    }};
-}
+#[cfg(feature = "etcd-provided")]
+compile_error!("only etcd-embeded or etcd-external feature can be enabled at this main compile; to build lib only use: '--features etcd-provided --no-default-features --lib'");
 
 /// db connection is required
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
@@ -76,50 +38,12 @@ async fn main() -> Result<(), String> {
     println!();
 
     let input: Vec<String> = std::env::args_os().map(|e| e.to_string_lossy().to_string()).collect();
-    match arg_config::ArgConfig::new(input) {
+    match RppdConfig::new(input) {
         Ok(c) => {
-            let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(c.bind.as_str()).expect(format!("Binding to {}", c.bind).as_str());
-            if ips.len() == 0 {
-                eprintln!("No IpAddr found {}", c.bind);
-                std::process::exit(9);
-            }
-            let adr = SocketAddr::new(ips[0], c.port);
-            let srv = Cluster::init(c).await?;
-
-            let master = srv.master.clone();
-            let node_id = srv.node_id.clone();
-            let nodes = srv.node_connections.clone();
-
-            tokio::spawn(async move {
-                match Server::builder()
-                    .add_service(RppdNodeServer::new(srv))
-                    .serve(adr) // .serve_with_incoming_shutdown(uds_stream, rx.map(drop) )
-                    .await {
-                    Ok(()) => {
-                        println!("bye");
-                    }
-                    Err(e) => {
-                        eprintln!("{} {}", fl!("error"), e);
-                        println!();
-                        println!("{}", arg_config::usage());
-                        std::process::exit(10);
-                    }
-                }
-            });
+            let srv = RppdNodeCluster::init(c, logger()).await?;
+            let _ = srv.serve().await?;
             let sht = wait_for_signal().await;
-            if master.load(Ordering::Relaxed) {
-                let node_id = node_id.load(Ordering::Relaxed);
-                let nodes = nodes.read().await;
-                for (k, n) in nodes.iter() {
-                    if k != &node_id { // in case of self link
-                        if let Ok(node) = n {
-                            if let Ok(x) = node.lock().await.switch(SwitchRequest { node_id }).await {
-                                println!("{} {:?}", fl!("rppd-switch", from=node_id.to_string(), to=k.to_string()), x);
-                            }
-                        }
-                    }
-                }
-            }
+            srv.unmaster().await
         }
         Err(e) => {
             eprintln!("{} {}", fl!("error"), e);
@@ -141,6 +65,33 @@ async fn wait_for_signal() -> Result<String, String> {
 		_ = hangup_stream.recv() => {"hangup"},
 	};
     Ok(sig.to_string())
+}
+
+pub fn logger() -> Logger {
+    let mut builder = TerminalLoggerBuilder::new();
+    builder.channel_size(10240);
+    builder.destination(Destination::Stdout);
+
+    #[cfg(debug_assertions)]
+    builder.source_location(SourceLocation::LocalFileAndLine);
+
+    #[cfg(not(debug_assertions))]
+    builder.source_location(SourceLocation::None);
+
+    builder.level(severity());
+    builder.overflow_strategy(sloggers::types::OverflowStrategy::Drop);
+    builder.build().unwrap()
+}
+
+#[inline]
+#[cfg(debug_assertions)]
+fn severity() -> Severity {
+    Severity::Debug
+}
+
+#[cfg(not(debug_assertions))]
+fn severity() -> Severity {
+    Severity::Info
 }
 
 #[cfg(test)]

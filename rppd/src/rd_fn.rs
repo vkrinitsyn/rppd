@@ -1,38 +1,54 @@
 /*%LPH%*/
 
+#![allow(unused_variables)]
+
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::time::Instant;
 
 use chrono::Utc;
-use pyo3::{IntoPy, PyErr};
+use pyo3::PyErr;
 use pyo3::exceptions::PyTypeError;
-use pyo3::types::IntoPyDict;
+use slog::{error, Logger};
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
-use rppd_common::gen::rppc::{db_event_request, pk_column, DbEventRequest, PkColumn};
+use rppd_common::protogen::rppc::{db_event_request, pk_column, DbEventRequest, PkColumn};
 use crate::py::PyCall;
-use crate::rd_config::{Cluster, TopicType};
+use crate::rd_config::{RppdNodeCluster, TopicType};
 
 pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, err, verbose_debug from %SCHEMA%.rppd_function ";
 
 /// Rust Python Function
-#[derive(sqlx::FromRow, PartialEq, Debug, Clone)]
+#[derive(sqlx::FromRow, Debug, Clone)]
 pub struct RpFn {
     pub(crate) id: i32,
     pub(crate) code: String,
     pub(crate) checksum: String,
+    /// The rppd_event() must trigger on the corresponding "schema_table" to fire the function, 
+    /// see topic to identify execution order';
     pub(crate) schema_table: String,
+    /// Options are:
+    /// - "": queue/topic per table (see schema_table);
+    /// - ".{column}": queue per value of the column "id" in this table, the value type must be int;
+    /// - "{any_name}": global queue i.e. multiple tables can share the same queue/topic';
     pub(crate) topic: String,
     /// max concurrent event execution on the topic to make queue
+    /// 'if queue, then perform consequence events execution for the same topic. 
+    /// Ex: if the "topic" is ".id" and not queue, then events for same row will execute in parallel';
     pub(crate) queue: bool,
     pub(crate) cleanup_logs_min: i32,
     /// queue priority
     pub(crate) priority: i32,
+    pub(crate) fn_logging: bool,
     pub(crate) verbose_debug: bool,
     // env json, -- TODO reserved for future usage: db pool (read only)/config python param name prefix (mapping)
     // sign json -- TODO reserved for future usage: approve sign, required RSA private key on startup config
+
+    // use for etcd KV
+    // #[sqlx(skip)] 
+    // pub(crate) notify: Result<Sender<u8>, String>,
+
 }
 
 impl RpFnId {
@@ -41,17 +57,23 @@ impl RpFnId {
             id: f.id,
             queue: f.queue,
             priority: f.priority,
-            save: f.cleanup_logs_min > 0,
+            save: f.fn_logging,
+            trig_value: f.is_dot(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
+#[allow(unused_variables, dead_code)]
 pub struct RpFnId {
     pub(crate) id: i32,
     pub(crate) queue: bool,
     pub(crate) priority: i32,
     pub(crate) save: bool,
+    /// The value of column to trigger if topic is ".{column}". 
+    /// Use stored value to load on restore queue on startup and continue. 
+    /// Must be column type int to continue otherwise will save null and not able to restore.
+    pub(crate) trig_value: bool,
 }
 
 
@@ -62,6 +84,7 @@ impl Default for RpFnId {
             queue: false,
             priority: 0,
             save: false,
+            trig_value: false,
         }
     }
 }
@@ -122,10 +145,14 @@ pub struct RpFnLog {
     pub(crate) took_sec: Option<i32>,
 
     pub(crate) trig_value: Option<sqlx::types::Json<HashMap<String, String>>>,
+    #[sqlx(skip)] /// use for etcd KV
+    pub(crate) value: Option<Vec<u8>>,
+    #[sqlx(skip)] /// transient copy from RpFn
+    pub(crate) rn_fn_id: Option<RpFnId>,
 
     /// DbAction
     pub(crate) trig_type: i32,
-    pub(crate) started_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) started_at: chrono::DateTime<Utc>,
     pub(crate) error_msg: Option<String>,
 }
 
@@ -140,6 +167,8 @@ impl Default for RpFnLog {
             fn_idp: Some(RpFnId::default()),
             took_sec: None,
             trig_value: None,
+            value: None,
+            rn_fn_id: None,
             trig_type: 0,
             started_at: Utc::now(),
             error_msg: None,
@@ -202,7 +231,7 @@ impl RpFn {
     }
 
     #[inline]
-    pub(crate) async fn merge(&mut self, f: RpFn, cluster: &Cluster) {
+    pub(crate) async fn merge(&mut self, f: RpFn, cluster: &RppdNodeCluster) {
         if f.topic != self.topic {
             self.topic = f.topic;
             let mut map = cluster.fn_id.write().await;
@@ -219,6 +248,8 @@ impl RpFn {
         }
 
         if f.schema_table != self.schema_table {
+            self.watch_merge(Some(&f.schema_table), &cluster).await;
+            
             self.schema_table = f.schema_table;
             let mut map = cluster.fn_tt.write().await;
             match map.get_mut(&self.schema_table) {
@@ -279,6 +310,9 @@ const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, star
 const INSERT_LOG_V: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type, trig_value) values ($1, $2, $3, $4) returning id";
 const INSERT_LOG: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type) values ($1, $2, $3) returning id";
 
+pub(crate) const DELETE_LOG: &str = "delete from %SCHEMA%.rppd_function_log fnl using %SCHEMA%.rppd_function fn\
+ where fnl.fn_id = fn.id and cleanup_logs_min > 0 and started_at < current_time - cleanup_logs_min";
+
 impl RpFnLog {
     #[inline]
     pub(crate) fn insert_v(schema: &String) -> String {
@@ -296,6 +330,7 @@ impl RpFnLog {
 
     /// prefix is " where " OR " and "
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn select_sql(&self, prefix: &str) -> String {
         let mut sql = String::new();
         if let Some(map) = &self.trig_value {
@@ -332,7 +367,9 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) async fn update_err(&self, r: String, db: Pool<Postgres>, schema: &String) {
+    pub(crate) async fn update_err(&self, r: String, db: Pool<Postgres>, schema: &String, log: &Logger) {
+        error!(log, "update_err {}", r);
+
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set error_msg = $1 where id = $2";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
@@ -340,7 +377,7 @@ impl RpFnLog {
             .bind(Some(r))
             .bind(self.id)
             .execute(&db).await {
-            eprintln!("{}", e);
+            error!(log, "{}", e);
         }
     }
 
@@ -363,7 +400,7 @@ impl RpFnLog {
     pub(crate) fn to_event(&self, table_name: String, node_id: i32) -> DbEventRequest {
         let mut pks = Vec::new();
         if let Some(val) = &self.trig_value {
-            for ((c, v)) in val.0.iter() {
+            for (c, v) in val.0.iter() {
                 let (column_type, pk_value) = match v.parse::<i32>() {
                     Ok(v) => (0, Some(pk_column::PkValue::IntValue(v))),
                     Err(_) => match v.parse::<i64>() {
@@ -389,6 +426,8 @@ impl RpFnLog {
 }
 
 #[inline]
+
+#[allow(dead_code)]
 fn esca(input: &String) -> String {
     if input.len() == 0 {
         "".to_string()
@@ -451,8 +490,6 @@ mod tests {
         assert!(r.len() >= 0);
 
         let mut v = HashMap::new();
-        v.insert("id".to_string(), "0".to_string());
-        // v.insert("x".to_string(), "'0'".to_string());
         let id = sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&"public".to_string()).as_str())
             .bind(0)
             .bind(0)
