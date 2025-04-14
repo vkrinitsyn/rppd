@@ -58,7 +58,9 @@ cargo install cargo-pgrx --force && cargo pgrx init
 
 ## Usage
 
-1. Create postgres extension: will copy rppd.so and create few tables in desired schema
+1. Create postgres extension: copy rppd.so and create few tables in desired schema
+ > cp -f target/debug/librppd.so /usr/lib/postgresql/14/lib/rppd.so
+
 2. Run as many service as required:
  - a text file in any format OR a dir with a file: rppd.rppd_config names are: 'schema', 'url', 'bind'
  - three optional args, in any order: config schema, db connection url (starts with 'postgres://', binding IP and port default is 'localhost:8881'
@@ -76,6 +78,7 @@ The simple workaround is to sleep a second on Python function call.
 
 ### Use to get more build in help:
 ```sql
+psql> \dx rppd
 psql> \df+ rppd*
 ```
 

@@ -32,23 +32,22 @@ compile_error!("only etcd-embeded or etcd-external feature can be enabled at thi
 /// db connection is required
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() -> Result<(), String> {
+    let log = logger();
     let app_name = fl!("rppd-name");
-    println!("{} {}", app_name, env!("CARGO_PKG_VERSION"));
-    println!("{}", fl!("rppd-about"));
-    println!();
+    info!(log, "{} {}", app_name, env!("CARGO_PKG_VERSION"));
+    info!(log, "{}", fl!("rppd-about"));
 
     let input: Vec<String> = std::env::args_os().map(|e| e.to_string_lossy().to_string()).collect();
     match RppdConfig::new(input) {
         Ok(c) => {
-            let srv = RppdNodeCluster::init(c, logger()).await?;
+            let srv = RppdNodeCluster::init(c, log.clone()).await?;
             let _ = srv.serve().await?;
             let sht = wait_for_signal().await;
             srv.unmaster().await
         }
         Err(e) => {
-            eprintln!("{} {}", fl!("error"), e);
-            println!();
-            println!("{}", arg_config::usage());
+            error!(log, "{} {}", fl!("error"), e);
+            info!(log, "{}", arg_config::usage());
             std::process::exit(22);
         }
     }

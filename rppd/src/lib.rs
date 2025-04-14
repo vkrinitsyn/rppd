@@ -9,7 +9,7 @@ use i18n_embed::{
 };
 use lazy_static::lazy_static;
 use rust_embed::RustEmbed;
-use slog::info;
+use slog::{error, info};
 use tonic::transport::Server;
 use tonic::transport::server::Router;
 use rppd_common::protogen::rppd::rppd_node_server::*;
@@ -79,27 +79,25 @@ impl RppdNodeCluster {
         let adr = if bind.chars().next().unwrap_or(' ').is_numeric() {
             addrsv[0].parse::<SocketAddr>().map_err(|e| format!("parsing {}: {}", self.cfg.bind, e))?
         } else {
-            let port = adr[1].parse::<u16>().map_err(|e| format!("expected port in {}: {}", self.cfg.bind, e))?;
-
             let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(format!("Binding to {}", bind).as_str());
             if ips.len() == 0 {
-                eprintln!("No IpAddr found {}", bind);
+                error!(self.log, "No IpAddr found {}", bind);
                 std::process::exit(9);
             }
-            SocketAddr::new(ips[0], port)
+            SocketAddr::new(ips[0], self.cfg.port)
         };
 
         #[cfg(feature = "etcd-embeded")] info!(self.log, "Starting RPPD&ETCD server [{}] at: {}", self.cfg.name, self.cfg.bind);
-        #[cfg(not(feature = "etcd-provided"))] info!(self.log, "Starting RPPD server [{}] at: {}", self.cfg.name, self.cfg.bind);
-        
+        #[cfg(not(feature = "etcd-embeded"))] info!(self.log, "Starting RPPD server [{}] at: {}", self.cfg.name, self.cfg.bind);
+        let log = self.log.clone();
         tokio::spawn(async move {
             match srv.serve(adr) // .serve_with_incoming_shutdown(uds_stream, rx.map(drop) )
                 .await {
                 Ok(()) => {
-                    println!("bye");
+                    info!(log, "bye");
                 }
                 Err(e) => {
-                    eprintln!("{} {}", fl!("error"), e);
+                    error!(log, "{} {}", fl!("error"), e);
                     std::process::exit(10);
                 }
             }

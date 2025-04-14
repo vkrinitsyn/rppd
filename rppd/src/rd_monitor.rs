@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use shims::Histogram;
-use slog::error;
+use slog::{error, info};
 use tokio::time::sleep;
 use rppd_common::protogen::rppc::{StatusRequest, StatusResponse};
 use crate::rd_config::{RppdNodeCluster, DWN_MASTER, MAX_ERRORS, SELECT_MASTER, TIMEOUT_MS, UP_MASTER};
@@ -166,6 +166,7 @@ impl RppdNodeCluster {
     /// periodically check master node availability and consistency in DB and memory
     pub(crate) async fn start_monitoring(&self) {
         let node_id = self.node_id.load(Ordering::Relaxed);
+        info!(self.log, "start_monitoring node {}", node_id);
         let sql_id = SELECT_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
         assert!(MAX_ERRORS > 1);
         let mut prev_db_master = None;
@@ -233,20 +234,20 @@ impl RppdNodeCluster {
                                             let r = r.into_inner();
                                             if !r.is_master {  // discrepancy
                                                 errors += 1;
-                                                eprintln!("discrepancy on call master - replied: 'not a master'");
+                                                error!(self.log, "discrepancy on call master - replied: 'not a master'");
                                             } else {
                                                 errors = 0;
                                             }
                                         }
                                         Err(e) => { // master having error
                                             errors += 1;
-                                            eprintln!("error on call master: {}", e);
+                                            error!(self.log, "error on call master: {}", e);
                                         }
                                     }
                                 }
                                 Err(e) => { // master having error
                                     errors += 1;
-                                    eprintln!("no connection to master host: {}", e);
+                                    error!(self.log, "no connection to master host: {}", e);
                                 }
                             }
                         }
@@ -254,7 +255,7 @@ impl RppdNodeCluster {
                 }
                 Err(e) => { // scenarios: DB not available, no one marked as master: either wait a second than act
                     errors += 1;
-                    eprintln!("can't load master from db {}", e);
+                    error!(self.log, "can't load master from db {}", e);
                 }
             }
 
@@ -276,7 +277,7 @@ impl RppdNodeCluster {
 
         if let Some(master_id) = prev_db_master { // unregister previous master
             if let Ok(_ok) = sqlx::query(sql_dwn.as_str()).bind(master_id).execute(&self.db()).await {
-                println!("removed previous load master from DB row ID = {}", master_id);
+                info!(self.log, "removed previous load master from DB row ID = {}", master_id);
             }
         }
 
@@ -287,7 +288,7 @@ impl RppdNodeCluster {
                 self.master_id.store(node_id, Ordering::Relaxed);
             }
             Err(e) => {
-                eprintln!("marking self as master: {}", e);
+                error!(self.log, "marking self as master: {}", e);
             }
         }
     }

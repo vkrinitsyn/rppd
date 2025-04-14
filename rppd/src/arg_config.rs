@@ -87,7 +87,7 @@ impl Default for RppdConfig {
         };
         let this = match std::env::var_os("HOSTNAME") {
             Some(a) => a.to_str().unwrap_or(LOCALHOST).to_string(),
-            _ => fs::read_to_string("/etc/hostname").unwrap_or(LOCALHOST.to_string()),
+            _ => fs::read_to_string("/etc/hostname").unwrap_or(LOCALHOST.to_string()).trim().to_string(),
         };
 
         RppdConfig {
@@ -170,10 +170,12 @@ impl RppdConfig {
                 } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, ":", BIND) {
                     let b: Vec<&str> = v.split(":").collect();
                     bind = b[0].to_string();
-                    match b[1].parse::<u16>() {
-                        Ok(v) => { port = v; }
-                        Err(e) => {
-                            return Err(fl!("err-wrong-port-format", string = e.to_string(), value = v));
+                    if b.len() > 1 {
+                        match b[1].parse::<u16>() {
+                            Ok(v) => { port = v; }
+                            Err(e) => {
+                                return Err(fl!("err-wrong-port-format", string = e.to_string(), value = v));
+                            }
                         }
                     }
                 } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "", SCHEMA) {

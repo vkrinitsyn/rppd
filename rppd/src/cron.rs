@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
+use slog::{error, Logger};
 use sqlx::{Pool, Postgres};
 use rppd_common::protogen::rppc::DbEventRequest;
 use crate::rd_config::RppdNodeCluster;
@@ -30,32 +31,32 @@ pub struct RpFnCron {
 impl RpFnCron {
     /// load all or reload one or remove one schedules
 
-    async fn update_err(&self, db: &Pool<Postgres>, msg: String, schema: &String) -> Result<(), String> {
+    async fn update_err(&self, db: &Pool<Postgres>, msg: String, schema: &String, log: &Logger) -> Result<(), String> {
         let sql = "update %SCHEMA%.rppd_cron set error_msg = $2 where id = $1";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(self.id)
             .bind(Some(msg))
             .execute(db).await {
-            eprintln!("{}", e);
+            error!(log, "{}", e);
         }
 
         Ok(())
     }
 
-    async fn update_no_err(&self, db: &Pool<Postgres>, schema: &String) -> Result<(), String> {
+    async fn update_no_err(&self, db: &Pool<Postgres>, schema: &String, log: &Logger) -> Result<(), String> {
         let sql = "update %SCHEMA%.rppd_cron set error_msg = NULL where id = $1";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(self.id)
             .execute(db).await {
-            eprintln!("{}", e);
+            error!(log, "{}", e);
         }
 
         Ok(())
     }
 
-    async fn start(&mut self, db: &Pool<Postgres>, schema: &String, target: String) -> Option<String> {
+    async fn start(&mut self, db: &Pool<Postgres>, schema: &String, target: String, log: &Logger) -> Option<String> {
         let now = Utc::now();
 
         if let Some(started_at) = self.started_at {
@@ -76,7 +77,7 @@ impl RpFnCron {
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(self.id)
             .execute(db).await {
-            eprintln!("starting cron job with SQL: {} raise error: {}", sql, e);
+            error!(log, "starting cron job with SQL: {} raise error: {}", sql, e);
             return None;
         }
 
@@ -110,7 +111,7 @@ impl RpFnCron {
             }
         }
         {
-            eprintln!("finishing cron job SQL: {}, raise error{}", esql, e);
+            error!(log, "finishing cron job SQL: {}, raise error{}", esql, e);
         }
         self.finished_at = Some(Utc::now());
         Some(self.cron.clone())
@@ -142,7 +143,7 @@ impl RppdNodeCluster {
                         None => { continue; }
                         Some(pfn) => pfn.schema_table.clone()
                     };
-                    c.start(&db, &schema, target).await
+                    c.start(&db, &schema, target, &self.log).await
                 } else { None } {
                     cron.jobs.remove(&dt);
                     if let Ok(dt) = cron_parser::parse(crontab.as_str(), &Utc::now()) {
@@ -166,15 +167,7 @@ pub struct CronContext {
     pub(crate) crons: BTreeMap<i32, RpFnCron>,
     /// sorted cron jobs
     pub(crate) jobs: BTreeMap<CronDTType, i32>,
-}
-
-impl Default for CronContext {
-    fn default() -> Self {
-        CronContext {
-            crons: Default::default(),
-            jobs: Default::default(),
-        }
-    }
+    pub(crate) log: Logger,
 }
 
 impl CronContext {
@@ -192,14 +185,14 @@ impl CronContext {
             match cron_parser::parse(c.cron.as_str(), &Utc::now()) {
                 Ok(d) => {
                     if c.error_msg.is_some() {
-                        let _ = c.update_no_err(&db, &schema);
+                        let _ = c.update_no_err(&db, &schema, &self.log);
                     } else {
                         self.jobs.insert(d, c.id);
                         self.crons.insert(c.id, c);
                     }
                 }
                 Err(e) => {
-                    let _ = c.update_err(&db, format!("parsing cron#[{}]: {} error: {}", c.id, c.cron, e), &schema);
+                    let _ = c.update_err(&db, format!("parsing cron#[{}]: {} error: {}", c.id, c.cron, e), &schema, &self.log);
                 }
             }
         }

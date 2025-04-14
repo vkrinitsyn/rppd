@@ -3,6 +3,7 @@
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
+use slog::info;
 use tonic::{Request, Response, Status};
 use rppd_common::protogen::rppc::{DbAction, DbEventRequest, DbEventResponse, PkColumn, PkColumnType, StatusRequest, StatusResponse};
 use rppd_common::protogen::rppc::pk_column::PkValue;
@@ -112,7 +113,7 @@ impl RppdNodeCluster {
                     }
                 }
                 ScheduleResult::Repeat(repeat_with) => {
-                    println!("re-requesting to repeat: {:?}", repeat_with);
+                    info!(self.log, "re-requesting to repeat: {:?}", repeat_with);
                     return Ok(Response::new(DbEventResponse { saved: false, repeat_with }));
                 }
             }

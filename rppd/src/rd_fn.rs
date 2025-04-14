@@ -17,7 +17,7 @@ use rppd_common::protogen::rppc::{db_event_request, pk_column, DbEventRequest, P
 use crate::py::PyCall;
 use crate::rd_config::{RppdNodeCluster, TopicType};
 
-pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, err, verbose_debug from %SCHEMA%.rppd_function ";
+pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, fn_logging, verbose_debug from %SCHEMA%.rppd_function ";
 
 /// Rust Python Function
 #[derive(sqlx::FromRow, Debug, Clone)]
@@ -44,10 +44,6 @@ pub struct RpFn {
     pub(crate) verbose_debug: bool,
     // env json, -- TODO reserved for future usage: db pool (read only)/config python param name prefix (mapping)
     // sign json -- TODO reserved for future usage: approve sign, required RSA private key on startup config
-
-    // use for etcd KV
-    // #[sqlx(skip)] 
-    // pub(crate) notify: Result<Sender<u8>, String>,
 
 }
 
@@ -295,7 +291,7 @@ impl RpFn {
         } else {
             "".to_string()
         };
-        format!("error on run [{}]@{}: {} in {}", self.schema_table, self.topic, err, msg)
+        format!("{} on run [{}]@{}: {}", err, self.schema_table, self.topic, msg)
     }
 
     #[inline]
@@ -310,8 +306,8 @@ const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, star
 const INSERT_LOG_V: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type, trig_value) values ($1, $2, $3, $4) returning id";
 const INSERT_LOG: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type) values ($1, $2, $3) returning id";
 
-pub(crate) const DELETE_LOG: &str = "delete from %SCHEMA%.rppd_function_log fnl using %SCHEMA%.rppd_function fn\
- where fnl.fn_id = fn.id and cleanup_logs_min > 0 and started_at < current_time - cleanup_logs_min";
+pub(crate) const DELETE_LOG: &str = "delete from %SCHEMA%.rppd_function_log fnl using %SCHEMA%.rppd_function fn \
+ where fnl.fn_id = fn.id and cleanup_logs_min > 0 and started_at < current_timestamp - make_interval(mins => cleanup_logs_min)";
 
 impl RpFnLog {
     #[inline]
@@ -353,7 +349,7 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) async fn update(&self, took: u64, r: Option<String>, db: Pool<Postgres>, schema: &String) {
+    pub(crate) async fn update(&self, took: u64, r: Option<String>, db: Pool<Postgres>, schema: &String, log: &Logger) {
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set took_sec = $1, error_msg = $2 where id = $3";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
@@ -362,7 +358,7 @@ impl RpFnLog {
             .bind(r)
             .bind(self.id)
             .execute(&db).await {
-            eprintln!("{}", e);
+            error!(log, "{}", e);
         }
     }
 

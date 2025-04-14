@@ -20,7 +20,7 @@ use etcd::queue::QueueNameKey;
 
 #[cfg(feature = "etcd-external")] use tokio_stream::StreamExt;
 
-#[cfg(not(feature = "etcd-external"))] use tokio::sync::mpsc::{channel, SendError};
+#[cfg(not(feature = "etcd-external"))] use tokio::sync::mpsc::{channel, error::SendError};
 #[cfg(not(feature = "etcd-external"))] use tonic::Request;
 #[cfg(not(feature = "etcd-external"))] use crate::rd_config::WatcherW;
 
@@ -52,6 +52,10 @@ pub(crate) struct EtcdConnector {
 
     /// The node uuid
     client_id: Uuid,
+    /// host used to bind a server or connect to existing etcd
+    pub(crate) host: String,
+    /// port used to bind a server or connect to existing etcd
+    pub(crate) port: String,
 
     log: Logger,
 }
@@ -71,17 +75,20 @@ impl EtcdConnector {
     }
 
     #[cfg(feature = "etcd-embeded")]
-    pub(crate) async fn init(cfg: &RppdConfig, log: &slog::Logger) -> Self {
+    pub(crate) async fn init(cfg: &RppdConfig, log: &Logger) -> Self {
         let etcd = EtcdNode::init(EtcdConfig {
             node: cfg.node.to_string(),
             cluster: cfg.cluster.to_string(),
             name: cfg.name.clone(),
+            listen_client_urls: format!("{}:{}", cfg.bind, cfg.port),
             ..Default::default()
         }, log.clone()).await;
 
         EtcdConnector {
             etcd,
             client_id: cfg.node.clone(),
+            host: cfg.bind.clone(),
+            port: cfg.port.to_string(),
             log: log.clone(),
         }
     }

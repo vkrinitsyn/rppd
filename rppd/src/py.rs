@@ -82,11 +82,19 @@ impl RppdNodeCluster {
             Ok(PyModule::import(py, ETCD_PY)?.into())
         })?;
 
-        // let libpq_kv = format!("host=localhost sslmode=disable user={} password={} dbname={}", username, password, db);
+        let (host, port) = {
+            let etcd = self.etcd.read().await;
+            (etcd.host.clone(), etcd.port.clone())
+        };
+        
         let etcd_client: Result<PyObject, PyErr> = Python::with_gil(|py| -> PyResult<_> {
-            // Borrows a GIL-bound reference as PyAny.
-            Ok(etcd_module.bind_borrowed(py).getattr("client")?.call0()?.into())
+            Ok(etcd_module.bind_borrowed(py).getattr("client")?
+                .call( (host.clone(), port.clone()), None)?.into())
         });
+        
+        if let Err(e) = &etcd_client {
+            slog::error!(self.log, "failed to connect to etcd v3 [{}:{}]: {}", host, port, e);
+        }
 
         Ok(PyContext {
             py_rt: ManuallyDrop::new(module),

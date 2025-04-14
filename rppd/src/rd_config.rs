@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use slog::{error, info, warn, Logger};
+use slog::{crit, debug, error, info, warn, Logger};
 use sqlx::{Pool, Postgres};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -291,7 +291,7 @@ impl RppdNodeCluster {
             }
         }
         self.fns.write().await.retain(|k, _v| loaded.contains(&RpFnId { id: *k, ..RpFnId::default() }));
-        println!("loaded {} function(s) for {} table(s) and {} topic(s)", self.fns.read().await.len(), self.fn_tt.read().await.len(), self.fn_id.read().await.len(), );
+        info!(self.log, "loaded {} function(s) for {} table(s) and {} topic(s)", self.fns.read().await.len(), self.fn_tt.read().await.len(), self.fn_id.read().await.len(), );
         Ok(())
     }
 
@@ -313,11 +313,11 @@ impl RppdNodeCluster {
         let r = sqlx::query_as::<_, RpHost>(sql.as_str())
             .fetch_all(&pool).await
             .map_err(|e| format!("Loading cluster of active nodes [{}]: {}", sql, e))?;
+        debug!(log, "loaded {:?} for {}", r, c.name);
         let mut master = false; // master is present and up
         let mut found_self = false; // is self registered
         let mut found_self_master = false; // is self registered
-        let r_len = r.len();
-        let mut id = 0;
+        let mut id = 0; 
         let mut master_id = 0;
         for n in r {
             if n.master.unwrap_or(false) {
@@ -368,15 +368,19 @@ impl RppdNodeCluster {
             fn_tt: Arc::new(Default::default()),
             fn_id: Arc::new(Default::default()),
             exec: Arc::new(Default::default()),
-            cron: Arc::new(Default::default()),
+            cron: Arc::new(RwLock::new(CronContext {
+                crons: BTreeMap::new(),
+                jobs: BTreeMap::new(),
+                log: log.clone(),
+            })),
             etcd: Arc::new(RwLock::new(etcd)),
             kv_sender,
             watchers: Arc::new(Default::default()),
             log,
         };
 
-        cluster.run(rsvr, kv_rsvr, r_len == 0 || !found_self, !master && !found_self_master).await;
-        println!("Cluster instance created");
+        cluster.run(rsvr, kv_rsvr, !found_self, !master && !found_self_master).await;
+        info!(cluster.log, "Cluster instance created");
         Ok(cluster)
     }
 
@@ -388,8 +392,11 @@ impl RppdNodeCluster {
         tokio::spawn(async move { // will execute as background, but will try to connect to this host
             if let Err(e) = ctx.start_bg(self_register, self_master).await {
                 // TODO log
-                eprintln!("Failed to start:{}", e);
-                std::process::exit(11);
+                crit!(ctx.log, "Failed to start: {}", e);
+                eprint!("Failed to start: {}", e);
+                let _ = tokio::time::sleep(Duration::from_millis(100));
+                // drop(ctx); // will flush logger on drop
+                std::process::exit(12);
             }
             tokio::spawn(async move {
                 ctxm.start_monitoring().await;
@@ -510,24 +517,25 @@ impl RppdNodeCluster {
         let pool = self.db();
         let host = format!("{}:{}", self.cfg.bind, self.cfg.port);
         if insert {
-            println!("Self registering: {} by name: {} {}", host, self.cfg.name, if master { "as master" } else { "" });
+            info!(self.log, "Self registering: {} by name: {} {}", host, self.cfg.name, if master { "as master" } else { "" });
             let sql = INSERT_HOST.replace("%SCHEMA%", &self.cfg.schema.as_str());
             let id = sqlx::query_scalar::<_, i32>(sql.as_str())
                 .bind(&host)
                 .bind(&self.cfg.name)
                 .bind(if master { Some(true) } else { None })
-                .fetch_one(&self.db()).await.map_err(|e| e.to_string())?;
+                .fetch_one(&self.db()).await
+                .map_err(|e| format!("self reg failed {}", e))?;
 
             self.node_id.store(id, Ordering::Relaxed);
-            println!("Registered: {}", host);
+            info!(self.log, "Registered: {}", host);
         }
         let id = self.node_id.load(Ordering::Relaxed);
 
         if !insert && master {
-            println!("Self mark as master: {} by name: {} ", host, self.cfg.name);
+            info!(self.log, "Self mark as master: {} by name: {} ", host, self.cfg.name);
             let sql = UP_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
             if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
-                eprintln!("{}", e);
+                error!(self.log, "{}", e);
             }
         }
 
@@ -542,9 +550,9 @@ impl RppdNodeCluster {
             self.master_id.store(id, Ordering::Relaxed);
         }
 
-        let _sql = RpHost::select(&self.cfg.schema, "id = $1");
+        // let _sql = RpHost::select(&self.cfg.schema, "id = $1");
 
-        // load functions
+        debug!(self.log, "loading functions");
         let _ = self.reload_fs(&None).await?;
 
         // load messages to internal queue from fn_log, check timeout and execution status,
@@ -554,6 +562,7 @@ impl RppdNodeCluster {
             self.queueing(l, false).await; // append loaded on startup
         }
 
+        debug!(self.log, "loading cron jobs");
         let _ = self.reload_cron(&None).await;
 
         // set STARTED
@@ -566,7 +575,7 @@ impl RppdNodeCluster {
     /// call by receive
     #[inline]
     async fn execute(&self, f: Option<RpFnLog>) {
-        println!("invoke {:?}", f);
+        debug!(self.log, "invoke {:?}", f);
         let f = match f {
             None => match self.queue.write().await.pick_one() {
                 None => { // nothing to execute from topics or not ready as a queue
@@ -607,7 +616,7 @@ impl RppdNodeCluster {
                     }
                 }
             }
-            // println!("re-send1");
+            // info!("re-send1");
             if let Err(e) = self.sender.send(None).await {
                 warn!(self.log, "{}", e);
             }
@@ -617,7 +626,7 @@ impl RppdNodeCluster {
         let max_con_cfg = self.max_db_connections.load(Ordering::Relaxed);
         match self.fns.read().await.get(&f.fn_id) {
             None => {
-                eprintln!("no function by id: {}", f.fn_id);
+                error!(self.log, "no function by id: {}", f.fn_id);
             }
             Some(fc) => {
                 let started = Instant::now();
@@ -663,12 +672,12 @@ impl RppdNodeCluster {
                     }
 
                     match &r {
-                        Ok(_) => info!(log, "executed OK#{} {}", fc.schema_table, fc.topic),
+                        Ok(_) => debug!(log, "executed OK! {} {}", fc.schema_table, fc.topic),
                         Err(e) => error!(log, "executed notOK#{} {} {}", fc.schema_table, fc.topic, e),
                     }
                     
                     let sec = started.elapsed().as_secs();
-                    f.update(sec, r.err(), db, &schema).await;
+                    f.update(sec, r.err(), db, &schema, &log).await;
                     exec.write().await.push_front(p);
                     run.fetch_sub(1, Ordering::Relaxed);
                     if let Err(e) =
