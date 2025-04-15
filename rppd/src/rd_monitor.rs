@@ -1,14 +1,17 @@
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use shim::Histogram;
+use shims::Histogram;
+use slog::{error, info};
 use tokio::time::sleep;
-
-use crate::gen::rg::{StatusRequest, StatusResponse};
-use crate::rd_config::{Cluster, DWN_MASTER, MAX_ERRORS, SELECT_MASTER, TIMEOUT_MS, UP_MASTER};
+use rppd_common::protogen::rppc::{StatusRequest, StatusResponse};
+use crate::rd_config::{RppdNodeCluster, DWN_MASTER, MAX_ERRORS, SELECT_MASTER, TIMEOUT_MS, UP_MASTER};
+use crate::rd_fn::DELETE_LOG;
 
 #[derive(Clone)]
+#[allow(unused_variables, dead_code)]
 pub(crate) struct ClusterStat {
     pub(crate) node_stat: BTreeMap<i32, NodeStat>,
     sort: BTreeMap<u64, BTreeSet<i32>>,
@@ -32,8 +35,8 @@ impl Default for NodeStat {
     fn default() -> NodeStat {
         NodeStat {
             node_id: 0,
-            queue: Histogram::new(shim::Config::default()),
-            in_proc: Histogram::new(shim::Config::default()),
+            queue: Histogram::new(shims::Config::default()),
+            in_proc: Histogram::new(shims::Config::default()),
             weight: 0,
             self_master: false,
             online: false,
@@ -42,6 +45,7 @@ impl Default for NodeStat {
 }
 
 #[derive(Clone)]
+#[allow(unused_variables, dead_code)]
 pub(crate) struct NodeStat {
     node_id: i32,
     /// zero is better
@@ -141,7 +145,7 @@ impl PartialOrd for NodeStat {
 }
 */
 
-impl Cluster {
+impl RppdNodeCluster {
 
     /// call by exec on master node
     pub(crate) async fn pick_node(&self) -> Option<i32> {
@@ -162,6 +166,7 @@ impl Cluster {
     /// periodically check master node availability and consistency in DB and memory
     pub(crate) async fn start_monitoring(&self) {
         let node_id = self.node_id.load(Ordering::Relaxed);
+        info!(self.log, "start_monitoring node {}", node_id);
         let sql_id = SELECT_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
         assert!(MAX_ERRORS > 1);
         let mut prev_db_master = None;
@@ -196,7 +201,7 @@ impl Cluster {
                                                 let mut stat = self.stat.write().await;
                                                 match stat.node_stat.get_mut(&id) {
                                                     None => {
-                                                        let mut s: NodeStat = NodeStat::new_from(r);
+                                                        let s: NodeStat = NodeStat::new_from(r);
                                                         stat.node_stat.insert(id.clone(), s);
                                                     }
                                                     Some(s) => {
@@ -209,7 +214,7 @@ impl Cluster {
                                             Err(e) => err = Some(e.to_string())
                                         }
                                     }
-                                    Err(e) => { // TODO if node in error, try to re-connect
+                                    Err(_e) => { // TODO if node in error, try to re-connect
                                     }
                                 }
                             }
@@ -229,20 +234,20 @@ impl Cluster {
                                             let r = r.into_inner();
                                             if !r.is_master {  // discrepancy
                                                 errors += 1;
-                                                eprintln!("discrepancy on call master - replied: 'not a master'");
+                                                error!(self.log, "discrepancy on call master - replied: 'not a master'");
                                             } else {
                                                 errors = 0;
                                             }
                                         }
                                         Err(e) => { // master having error
                                             errors += 1;
-                                            eprintln!("error on call master: {}", e);
+                                            error!(self.log, "error on call master: {}", e);
                                         }
                                     }
                                 }
                                 Err(e) => { // master having error
                                     errors += 1;
-                                    eprintln!("no connection to master host: {}", e);
+                                    error!(self.log, "no connection to master host: {}", e);
                                 }
                             }
                         }
@@ -250,7 +255,7 @@ impl Cluster {
                 }
                 Err(e) => { // scenarios: DB not available, no one marked as master: either wait a second than act
                     errors += 1;
-                    eprintln!("can't load master from db {}", e);
+                    error!(self.log, "can't load master from db {}", e);
                 }
             }
 
@@ -259,7 +264,8 @@ impl Cluster {
                 self.become_master(prev_db_master).await;
             }
             self.cronjob().await;
-            let _ = sleep(Duration::from_millis(TIMEOUT_MS));
+            self.cleanup_fn_logs().await;
+            let _ = sleep(Duration::from_millis(5*TIMEOUT_MS)).await;
         }
     }
 
@@ -270,21 +276,31 @@ impl Cluster {
         let sql_up = UP_MASTER.replace("%SCHEMA%", self.cfg.schema.as_str());
 
         if let Some(master_id) = prev_db_master { // unregister previous master
-            if let Ok(ok) = sqlx::query(sql_dwn.as_str()).bind(master_id).execute(&self.db()).await {
-                println!("removed previous load master from DB row ID = {}", master_id);
+            if let Ok(_ok) = sqlx::query(sql_dwn.as_str()).bind(master_id).execute(&self.db()).await {
+                info!(self.log, "removed previous load master from DB row ID = {}", master_id);
             }
         }
 
         let node_id = self.node_id.load(Ordering::Relaxed);
         match sqlx::query(sql_up.as_str()).bind(node_id).execute(&self.db()).await {
-            Ok(ok) => {
+            Ok(_ok) => {
                 self.master.store(true, Ordering::Relaxed);
                 self.master_id.store(node_id, Ordering::Relaxed);
             }
             Err(e) => {
-                eprintln!("marking self as master: {}", e);
+                error!(self.log, "marking self as master: {}", e);
             }
         }
+    }
+
+    /// TODO delete old records
+    pub(crate) async fn cleanup_fn_logs(&self) {
+        let sql = DELETE_LOG.replace("%SCHEMA%", self.cfg.schema.as_str());
+
+        if let Err(e) = sqlx::query(sql.as_str()).execute(&self.db()).await {
+            error!(self.log, "Cleanup logs by [{}] {}", sql, e);
+        }
+
     }
 }
 

@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
-
-use crate::gen::rg::{fn_status, FnStatus, status_request, status_response, StatusFnsResponse};
-use crate::gen::rg::status_request::FnLog;
+use rppd_common::protogen::rppc::{fn_status, status_request, status_response, FnStatus, StatusFnsResponse};
 use crate::py::PyCall;
 use crate::rd_config::TopicDef;
 use crate::rd_fn::{RpFnId, RpFnLog};
@@ -22,7 +20,7 @@ impl QueueType {
                     // call must be InProgress with uuid match
                     if let Some(x) = line.pop_back() {
                         match x {
-                            PyCall::InProgressSaved(id, t) => {
+                            PyCall::InProgressSaved(_id, _t) => {
                                 // if &u != uid {
                                 // taken more than one events to execute from the same queue
                                 // } // else <- this is an expected only path!
@@ -69,6 +67,7 @@ impl QueueType {
 
     // for the unit testing
     #[inline]
+    #[allow(unused_variables, unused_mut, dead_code)]
     pub(crate) fn pick_one(&mut self) -> Option<RpFnLog> {
         let mut result = None;
         'it: for queue in self.0.values_mut() {
@@ -95,6 +94,7 @@ impl QueueType {
         }
 
         // cleanup
+        #[allow(unused_mut)]
         self.0.retain(|_k, mut v| {
             v.retain(|_x, y| !y.is_empty());
             !v.is_empty()
@@ -105,6 +105,7 @@ impl QueueType {
 
     /// state
     #[inline]
+    #[allow(unused_variables, dead_code)]
     pub(crate) async fn status(&self, fn_log: Option<status_request::FnLog>) -> Option<status_response::FnLog> {
         let fn_log = match fn_log {
             None => {
@@ -169,8 +170,8 @@ impl QueueType {
             }
         }
         match fn_log {
-            FnLog::FnLogId(_) => Some(status_response::FnLog::Status(FnStatus { status: None })),
-            FnLog::Uuid(_) => Some(status_response::FnLog::Uuid(StatusFnsResponse { uuid }))
+            status_request::FnLog::FnLogId(_) => Some(status_response::FnLog::Status(FnStatus { status: None })),
+            status_request::FnLog::Uuid(_) => Some(status_response::FnLog::Uuid(StatusFnsResponse { uuid }))
         }
     }
 

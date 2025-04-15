@@ -30,6 +30,7 @@ CREATE table if not exists @extschema@.rppd_function (
     priority int not null default 1,
     queue bool not null default true,
     cleanup_logs_min int not null default 0,
+    fn_logging bool not null default false,
     verbose_debug bool not null default false,
     env json, -- reserved for future usage: db pool (read only)/config python param name prefix (mapping)
     sign json -- reserved for future usage: approve sign
@@ -38,11 +39,12 @@ CREATE table if not exists @extschema@.rppd_function (
 select nextval('rppd_function_log_id_seq'::regclass); -- start log id from above 0, see ".id > 0"
 
 comment on table @extschema@.rppd_function is 'Python function code, linked table and topic. If modify, than the cache will be refreshed. Functions triggered for same topic OR table i.e. many fn per event will order by id.';
-comment on column @extschema@.rppd_function.schema_table is 'The rppd_event() must trigger on the corresponding "schema_table" to fire the function, see topic to identify execution order';
+comment on column @extschema@.rppd_function.schema_table is 'The rppd_event() must trigger on the corresponding "schema_table" to fire the function, see topic to identify execution order. if start with "/" then will create a watcher to etcd server. The /q/ or /queue/ required for messaging queue if use a rust etcd impl';
 comment on column @extschema@.rppd_function.topic is '"": queue/topic per table (see schema_table); ".{column}": queue per value of the column "id" in this table, the value type must be int; "{any_name}": global queue i.e. multiple tables can share the same queue/topic';
-comment on column @extschema@.rppd_function.queue is 'if queue, then perform consequence events execution for the same topic. Ex: if the "topic" is ".id" and not queue, then events for same row will execute in parallel';
-comment on column @extschema@.rppd_function.cleanup_logs_min is 'Cleanup rppd_function_log after certain minutes,  Zero is not store logs to rppd_function_log';
-comment on column @extschema@.rppd_function.verbose is 'Provide extra log message on error';
+comment on column @extschema@.rppd_function.queue is 'if queue, then perform consequence events execution for the same topic. If set true then etcd message will delete automatically. Ex: if the "topic" is ".id" and not queue, then events for same row will execute in parallel';
+comment on column @extschema@.rppd_function.cleanup_logs_min is 'Cleanup rppd_function_log after certain minutes. Will execute only if fn_logging';
+comment on column @extschema@.rppd_function.fn_logging is 'Store logs to rppd_function_log on every function call. Otherwise no DB call for a function execution, But DB still available to perform SQL call from Python.';
+comment on column @extschema@.rppd_function.verbose_debug is 'Provide extra log message and errors';
 
 CREATE TRIGGER @extschema@_rppd_function_event AFTER INSERT OR UPDATE OR DELETE ON
     @extschema@.rppd_function FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
@@ -56,7 +58,7 @@ CREATE table if not exists @extschema@.rppd_function_log (
     trig_value json,
     trig_type int not null default 0,
     started_at timestamptz not null default current_timestamp,
-    took_sec int,
+    took_ms bigint,
     error_msg text
 );
 
@@ -65,8 +67,8 @@ comment on column @extschema@.rppd_function_log.node_id is 'The rppd_config.id a
 comment on column @extschema@.rppd_function_log.fn_id is 'The rppd_function.id, but no FK to keep performance';
 comment on column @extschema@.rppd_function_log.trig_value is 'The value of column to trigger if topic is ".{column}". Use stored value to load on restore queue on startup and continue. Must be column type int to continue otherwise will save null and not able to restore.';
 comment on column @extschema@.rppd_function_log.trig_type is 'Type of event: Update = 0, Insert = 1, Delete = 2, Truncate = 3';
-comment on column @extschema@.rppd_function_log.took_sec is 'The rppd_function running time or NULL if it is not finished';
-comment on column @extschema@.rppd_function_log.error_msg is 'The error indicator. Must be null if completed OK';
+comment on column @extschema@.rppd_function_log.took_ms is 'The rppd_function running time in milliseconds or NULL if it is not finished';
+comment on column @extschema@.rppd_function_log.error_msg is 'The error messages includes function init on connect';
 
 
 -- schedule

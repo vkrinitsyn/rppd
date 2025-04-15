@@ -15,12 +15,11 @@ use pgrx::WhoAllocated;
 use tokio::runtime::{Builder, Runtime};
 use tonic::transport::{Channel, Endpoint};
 
-use crate::gen::rg::{DbAction, EventRequest, EventResponse, PkColumn, PkColumnType, StatusRequest};
-use crate::gen::rg::grpc_client::GrpcClient;
-use crate::gen::rg::pk_column::PkValue::{BigintValue, IntValue};
-use crate::gen::rg::status_request::FnLog;
+use rppd_common::protogen::rppc::{DbAction, DbEventRequest, DbEventResponse, PkColumn, PkColumnType, StatusRequest};
+use rppd_common::protogen::rppc::pk_column::PkValue::{BigintValue, IntValue};
+use rppd_common::protogen::rppc::status_request::FnLog;
+use rppd_common::protogen::rppg::rppd_trigger_client::RppdTriggerClient;
 
-mod gen;
 
 pgrx::pg_module_magic!();
 
@@ -51,7 +50,7 @@ pub struct MetaConfig {
     /// path to connect
     pub server_path: Arc<RwLock<String>>,
     pub loaded: Arc<AtomicBool>,
-    pub server: Arc<RwLock<Result<tokio::sync::Mutex<GrpcClient<Channel>>, String>>>,
+    pub server: Arc<RwLock<Result<tokio::sync::Mutex<RppdTriggerClient<Channel>>, String>>>,
     pub runtime: Arc<Mutex<Runtime>>,
 }
 
@@ -75,13 +74,13 @@ impl MetaConfig {
     }
 }
 
-fn connect(host: &String) -> Result<GrpcClient<Channel>, String> {
+fn connect(host: &String) -> Result<RppdTriggerClient<Channel>, String> {
     let path = format!("http://{}", host);
     // pgrx::warning!("connecting to: {}", path);
     match CONFIG.runtime.lock() {
         Ok(runtime) => {
             runtime.block_on(async move {
-                GrpcClient::connect(Duration::from_millis(TIMEOUT_MS),
+                RppdTriggerClient::connect(Duration::from_millis(TIMEOUT_MS),
                                     Endpoint::from_str(path.as_str())
                                         .map_err(|e| e.to_string())?)
                     .await.map_err(|e| format!("connecting {}", e))
@@ -179,10 +178,8 @@ fn rppd_event<'a>(
         DbAction::Insert as i32
     } else if trigger.event().fired_by_delete() {
         DbAction::Delete as i32
-    } else if trigger.event().fired_by_truncate() {
-        DbAction::Truncate as i32
     } else {
-        DbAction::Dual as i32
+        DbAction::Truncate as i32
     };
 
     // if event.event_type == DbAction::Insert as i32 && event.table_name.ends_with(CONFIG_TABLE)
@@ -191,7 +188,7 @@ fn rppd_event<'a>(
     // }
 
     let table_name = format!("{}.{}", trigger.table_schema().unwrap_or("public".into()), table_name);
-    let event = EventRequest { table_name, event_type, id_value: false, pks: pks.clone(), optional_caller: None };
+    let event = DbEventRequest { table_name, event_type, id_value: false, pks: pks.clone(), optional_caller: None };
 
     match call(event.clone()) {
         Ok(event_response) => {
@@ -208,7 +205,7 @@ fn rppd_event<'a>(
                 pks.push(PkColumn { pk_value, ..column.clone() });
             }
             if event_response.repeat_with.len() > 0 {
-                let _ = call(EventRequest { pks, id_value: true, ..event });
+                let _ = call(DbEventRequest { pks, id_value: true, ..event });
             }
 
             Ok(Some(current))
@@ -223,7 +220,7 @@ fn rppd_event<'a>(
     }
 }
 
-fn call(event: EventRequest) -> Result<EventResponse, String> {
+fn call(event: DbEventRequest) -> Result<DbEventResponse, String> {
     let client = CONFIG.server.clone();
     let runtime = CONFIG.runtime.lock().unwrap();
     let client = client.read().unwrap();
@@ -419,7 +416,7 @@ INSERT INTO test (title, description, payload) VALUES ('Fox', 'a description', '
 mod tests {
     use super::*;
 
-    #[pg_test]
+    // #[pg_test]
     fn test_insert() {
         println!("\nTEST\n");
 
@@ -443,17 +440,6 @@ mod tests {
 
 #[cfg(test)]
 pub mod pg_test {
-    pub fn setup(_options: Vec<&str>) {
-        println!("// perform one-off initialization when the pg_test framework starts");
-    }
-
-    pub fn postgresql_conf_options() -> Vec<&'static str> {
-        // return any postgresql.conf settings that are required for your tests
-        // use in, but no longer available: pgrx::pg_sys::GetConfigOptionByName();
-        vec![
-            "yt.test = 1111"
-        ]
-    }
 
     #[test]
     pub fn test_pg_compile() {

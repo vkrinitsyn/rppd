@@ -2,17 +2,18 @@
 
 syntax = "proto3";
 
-package rg;
+package rppc;
 
 enum DbAction {
-	UPDATE = 0;
-	INSERT = 1;
-	DELETE = 2;
-	TRUNCATE = 3;
-	DUAL = 4;
+	update = 0;
+	insert = 1;
+	delete = 2;
+	truncate = 3;
+	// from etcd message
+	dual = 4;
 }
 
-message EventRequest {
+message DbEventRequest {
 	// The name includes schema, i.e.: schema.table
 	string table_name = 1;
 	DbAction event_type = 2;
@@ -34,6 +35,8 @@ message EventRequest {
 enum PkColumnType {
   Int = 0;
   BigInt = 1;
+	// to support other types include etcd messages
+  String = 2;
 }
 
 
@@ -45,12 +48,14 @@ message PkColumn {
 	oneof pk_value {
 		int32 int_value = 5;
 		int64 bigint_value = 6;
+		string string_value = 7;
 	}
 }
 
-message EventResponse {
+message DbEventResponse {
+	// indicate succesful trigger execution on a RPPD server, not much logic in trigger
 	bool saved = 1;
-	// needs to call again with column name data
+	// needs to call from DB again with column's data specifyed by name
 	repeated PkColumn repeat_with = 2;
 }
 
@@ -111,29 +116,4 @@ message StatusResponse {
 		FnStatus status = 6;
 		StatusFnsResponse uuid = 7;
 	}
-}
-
-message SwitchRequest {
-	// master node ID to switch from
-	int32 node_id = 1;
-}
-
-message SwitchResponse {
-
-}
-
-//The GRPC service
-service Grpc {
-  // call by trigger or by master
-	rpc event(EventRequest) returns (EventResponse) {}
-
-  // call between nodes
-	rpc status(StatusRequest) returns (StatusResponse) {}
-
-  // call from node to master to mark the function event completed
-	rpc complete(StatusRequest) returns (SwitchResponse) {}
-
-  // call from master to nodes to switch it to master on current master shutdown
-	rpc switch(SwitchRequest) returns (SwitchResponse) {}
-
 }

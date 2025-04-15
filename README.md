@@ -1,5 +1,16 @@
 # RPPD - Rust Python Postgres Discovery
 
+## Top features:
+
+- Etcd integration with either Rust implementation for message queue and valilla impl for topic notify
+- Cluster/Cloud oriented for horizontal scalling
+- Lightwight (but still with std lib)
+- Simple cofiguration
+- Protobuf with gRPC
+- Embeddable to use as lib in your project
+- i18n for message translation
+
+
 ## Build
 > [!IMPORTANT]
 The target platform is Linux! The key component is pxrg, a rust postgres trigger engine that does not support windows.
@@ -9,9 +20,12 @@ https://grpc.io/docs/protoc-installation/
 
 
 ### Build
-To build the project
+To build the project requirements
 ```shell
-./make.sh
+git clone https://github.com/lupko/etcd3-client.git
+cd etcd3-client
+pip install .
+pip install typing-extensions
 ```
 
 
@@ -41,9 +55,13 @@ cargo install cargo-pgrx --force && cargo pgrx init
 
 ![topics](rppd%20schema.png)
 
+![queue](arch.jpg)
+
 ## Usage
 
-1. Create postgres extension: will copy rppd.so and create few tables in desired schema
+1. Create postgres extension: copy rppd.so and create few tables in desired schema
+ > cp -f target/debug/librppd.so /usr/lib/postgresql/14/lib/rppd.so
+
 2. Run as many service as required:
  - a text file in any format OR a dir with a file: rppd.rppd_config names are: 'schema', 'url', 'bind'
  - three optional args, in any order: config schema, db connection url (starts with 'postgres://', binding IP and port default is 'localhost:8881'
@@ -61,6 +79,7 @@ The simple workaround is to sleep a second on Python function call.
 
 ### Use to get more build in help:
 ```sql
+psql> \dx rppd
 psql> \df+ rppd*
 ```
 
@@ -73,7 +92,8 @@ DB -- database connection
 TOPIC -- fc.fns.topic
 TABLE -- fc.fns.schema_table
 TRIG -- UPDATE = 0;  INSERT = 1;  DELETE = 2;  TRUNCATE = 3;
-"COLUMN_NAME" --i.e. "ID" = see trig_value (up to 3)
+"COLUMN_NAME" --i.e. "ID" = see trig_value
+ETCD -- The etcd client
 ```
 
 ### python example:
@@ -96,7 +116,7 @@ DB.commit()
 create table if not exists test_source (id serial primary key, input text);
 create table if not exists test_sink (id serial primary key, data text);
 \set code `cat test_fn.py`
-insert into rppd_function (code, checksum, schema_table, topic) values (:'code', 'na', 'public.test_source', '.id');
+insert into rppd_function (code, checksum, schema_table, topic, verbose_debug, cleanup_logs_min) values (:'code', 'na', 'public.test_source', '.id', true, 100);
 CREATE TRIGGER test_src_event AFTER INSERT OR UPDATE OR DELETE ON test_source FOR EACH ROW EXECUTE PROCEDURE rppd_event();
 insert into test_source (input) values ('test input');
 select * from test_sink;
@@ -113,19 +133,26 @@ if len(input) > 0:
     DB.commit()
 ```
 
+### etcd test example:
+```sql
+\set code `cat test_fn_etcd.py`
+insert into rppd_function (code, checksum, schema_table, topic, verbose_debug, cleanup_logs_min) values (:'code', 'na', '/q/test', '', true, 100);
+```
+run
+```python
+ETCD = etcd3.client("localhost", 8881)
+ETCD.put('/q/test/producer/111', 'test key to etcd queue')
+```
+check
+```sql
+select * from test_sink;
+``
 
-## TODO
 
-### Core features and improvements 
+## TODO - features and improvements 
 - Connect to multiple DB (rw/ro - replica)
+- Monitoring cadence
+- OpenTelemetry integration
 - Python function code sign, approve and verify on call
-- Monitoring cadence and hardware with email notification
-- Cleanup saved Python function logs
-- Test multiple nodes
-
-### Cloud integration 
-- RESTapi/PubSub/ServiceBus to trigger events
-- OpenTelemetry logging integration like Appins  
-- Keyvault integration for a Database connections
-
+- Keyvault (secret) integration for a Database connections
 

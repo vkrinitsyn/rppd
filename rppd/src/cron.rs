@@ -1,12 +1,11 @@
+#![allow(unused_variables, dead_code)]
+
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
 use chrono::{DateTime, Utc};
-use cron_parser::ParseError;
-use shim::Config;
+use slog::{error, Logger};
 use sqlx::{Pool, Postgres};
-use crate::arg_config::ArgConfig;
-use crate::gen::rg::EventRequest;
-use crate::rd_config::Cluster;
+use rppd_common::protogen::rppc::DbEventRequest;
+use crate::rd_config::RppdNodeCluster;
 
 pub(crate) const SELECT_CRON: &str = "select id, fn_id, cron, column_name, column_value, cadence, timeout_sec, started_at, finished_at, error_msg from %SCHEMA%.rppd_cron";
 pub type CronDTType = DateTime<Utc>;
@@ -32,32 +31,32 @@ pub struct RpFnCron {
 impl RpFnCron {
     /// load all or reload one or remove one schedules
 
-    async fn update_err(&self, db: &Pool<Postgres>, msg: String, schema: &String) -> Result<(), String> {
+    async fn update_err(&self, db: &Pool<Postgres>, msg: String, schema: &String, log: &Logger) -> Result<(), String> {
         let sql = "update %SCHEMA%.rppd_cron set error_msg = $2 where id = $1";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(self.id)
             .bind(Some(msg))
             .execute(db).await {
-            eprintln!("{}", e);
+            error!(log, "{}", e);
         }
 
         Ok(())
     }
 
-    async fn update_no_err(&self, db: &Pool<Postgres>, schema: &String) -> Result<(), String> {
+    async fn update_no_err(&self, db: &Pool<Postgres>, schema: &String, log: &Logger) -> Result<(), String> {
         let sql = "update %SCHEMA%.rppd_cron set error_msg = NULL where id = $1";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(self.id)
             .execute(db).await {
-            eprintln!("{}", e);
+            error!(log, "{}", e);
         }
 
         Ok(())
     }
 
-    async fn start(&mut self, db: &Pool<Postgres>, schema: &String, target: String) -> Option<String> {
+    async fn start(&mut self, db: &Pool<Postgres>, schema: &String, target: String, log: &Logger) -> Option<String> {
         let now = Utc::now();
 
         if let Some(started_at) = self.started_at {
@@ -78,7 +77,7 @@ impl RpFnCron {
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(self.id)
             .execute(db).await {
-            eprintln!("starting cron job with SQL: {} raise error: {}", sql, e);
+            error!(log, "starting cron job with SQL: {} raise error: {}", sql, e);
             return None;
         }
 
@@ -112,7 +111,7 @@ impl RpFnCron {
             }
         }
         {
-            eprintln!("finishing cron job SQL: {}, raise error{}", esql, e);
+            error!(log, "finishing cron job SQL: {}, raise error{}", esql, e);
         }
         self.finished_at = Some(Utc::now());
         Some(self.cron.clone())
@@ -120,7 +119,7 @@ impl RpFnCron {
 
 }
 
-impl Cluster {
+impl RppdNodeCluster {
     /// periodic (every second) spawn a job check, call by monitoring loop
     /// the job itself a lightweight trigger to update a target table which will a spawn a new transaction as Python function
     pub(crate) async fn cronjob(&self) {
@@ -137,12 +136,14 @@ impl Cluster {
                 }
             }
             for (id, dt) in jobs {
+
+                #[allow(unused_mut)]
                 if let Some(crontab) = if let Some(mut c) = cron.crons.get_mut(&id) {
                     let target = match self.fns.read().await.get(&c.fn_id) {
                         None => { continue; }
                         Some(pfn) => pfn.schema_table.clone()
                     };
-                    c.start(&db, &schema, target).await
+                    c.start(&db, &schema, target, &self.log).await
                 } else { None } {
                     cron.jobs.remove(&dt);
                     if let Ok(dt) = cron_parser::parse(crontab.as_str(), &Utc::now()) {
@@ -155,7 +156,7 @@ impl Cluster {
     }
 
     /// cron load on start OR reload on event
-    pub(crate) async fn reload_cron(&self, request: &Option<EventRequest>) -> Result<(), String>  {
+    pub(crate) async fn reload_cron(&self, request: &Option<DbEventRequest>) -> Result<(), String>  {
         let mut cron = self.cron.write().await;
         cron.reload(&self.cfg.schema, self.db()).await
     }
@@ -166,15 +167,7 @@ pub struct CronContext {
     pub(crate) crons: BTreeMap<i32, RpFnCron>,
     /// sorted cron jobs
     pub(crate) jobs: BTreeMap<CronDTType, i32>,
-}
-
-impl Default for CronContext {
-    fn default() -> Self {
-        CronContext {
-            crons: Default::default(),
-            jobs: Default::default(),
-        }
-    }
+    pub(crate) log: Logger,
 }
 
 impl CronContext {
@@ -183,7 +176,7 @@ impl CronContext {
     /// cleanup
      #[inline]
    pub(crate) async fn reload(&mut self, schema: &String, db: Pool<Postgres>) -> Result<(), String> {
-        let mut cl = sqlx::query_as::<_, RpFnCron>(SELECT_CRON.replace("%SCHEMA%", schema.as_str()).as_str())
+        let cl = sqlx::query_as::<_, RpFnCron>(SELECT_CRON.replace("%SCHEMA%", schema.as_str()).as_str())
             .fetch_all(&db).await.map_err(|e| e.to_string())?;
 
         self.crons.clear();
@@ -192,14 +185,14 @@ impl CronContext {
             match cron_parser::parse(c.cron.as_str(), &Utc::now()) {
                 Ok(d) => {
                     if c.error_msg.is_some() {
-                        let _ = c.update_no_err(&db, &schema);
+                        let _ = c.update_no_err(&db, &schema, &self.log);
                     } else {
                         self.jobs.insert(d, c.id);
                         self.crons.insert(c.id, c);
                     }
                 }
                 Err(e) => {
-                    let _ = c.update_err(&db, format!("parsing cron#[{}]: {} error: {}", c.id, c.cron, e), &schema);
+                    let _ = c.update_err(&db, format!("parsing cron#[{}]: {} error: {}", c.id, c.cron, e), &schema, &self.log);
                 }
             }
         }

@@ -6,8 +6,8 @@ use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-
-// use ytcc::{ClusterConfigNames, DEFAULT_SCHEMA};
+use std::str::FromStr;
+use uuid::Uuid;
 use crate::fl;
 
 /// DEFAULT_SCHEMA_TABLEe: ytcc::DEFAULT_SCHEMA . ytcc::DEFAULT_TABLE)
@@ -35,12 +35,13 @@ pub const DEFAULT_PORT: u16 = 8881;
 ///  - priority is: env, if no set, than param, than file, than default
 
 pub fn usage() -> String {
-    format!("{}\n\n{}\n  {} {}.{}",
+    format!("{}\n\n{}\n  {} {}.{}\n{}",
             fl!("rppd-usage"),
             fl!("rppd-default-args"),
             DEFAULT_DB_URL,
             DEFAULT_SCHEMA,
-            CFG_TABLE
+            CFG_TABLE,
+            fl!("rppd-more-args"),
     )
 }
 
@@ -51,14 +52,19 @@ pub fn usage() -> String {
 ///  - use PGUSER env variable (or read from file) to postgres connection
 ///  - priority is: env, if no set, than param, than file, than default
 #[derive(Debug, Clone)]
-pub struct ArgConfig {
-    pub this: String,
+pub struct RppdConfig {
+    /// The node uuid
+    pub node: Uuid,
+    /// The cluster uuid
+    pub cluster: Uuid,
+    /// The readable name for a node host instance.
+    pub name: String,
+    pub schema: String,
     pub db_url: String,
     pub user: String,
     pub pwd: String,
     pub file: Option<String>,
 
-    pub schema: String,
     pub bind: String,
     pub port: u16,
     /// MAX_QUEUE_SIZE
@@ -66,7 +72,7 @@ pub struct ArgConfig {
     pub force_master: bool,
 }
 
-impl Default for ArgConfig {
+impl Default for RppdConfig {
     fn default() -> Self {
         let user = match std::env::var_os("PGUSER") {
             Some(a) => a.to_str().unwrap_or("postgres").to_string(),
@@ -81,11 +87,13 @@ impl Default for ArgConfig {
         };
         let this = match std::env::var_os("HOSTNAME") {
             Some(a) => a.to_str().unwrap_or(LOCALHOST).to_string(),
-            _ => fs::read_to_string("/etc/hostname").unwrap_or(LOCALHOST.to_string()),
+            _ => fs::read_to_string("/etc/hostname").unwrap_or(LOCALHOST.to_string()).trim().to_string(),
         };
 
-        ArgConfig {
-            this,
+        RppdConfig {
+            node: Uuid::new_v4(),
+            cluster: Uuid::new_v4(),
+            name: this,
             db_url: DEFAULT_DB_URL.replace("$USER", user.as_str()),
             user,
             pwd,
@@ -93,13 +101,13 @@ impl Default for ArgConfig {
             schema: "public".to_string(),
             bind: LOCALHOST.to_string(),
             port: DEFAULT_PORT,
-            max_queue_size: ArgConfig::max_queue_size(),
+            max_queue_size: RppdConfig::max_queue_size(),
             force_master: false,
         }
     }
 }
 
-impl Display for ArgConfig {
+impl Display for RppdConfig {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         writeln!(f, "db: {}", self.db_url)?;
@@ -110,72 +118,86 @@ impl Display for ArgConfig {
     }
 }
 
-impl ArgConfig {
+impl RppdConfig {
     /// first arg is an app itself
-    pub(crate) fn new(input: Vec<String>) -> Result<Self, String> {
-        if input.len() > 4 {
+    pub fn new(input: Vec<String>) -> Result<Self, String> {
+        
+        if input.len() > 6 {
             return Err(fl!("err-too-many-args", count = (input.len()  - 1)));
         } else if input.len() == 1 { // default using env
-            return Ok(ArgConfig::default());
+            return Ok(RppdConfig::default());
         }
 
         let mut cfg = HashMap::new();
         let mut file_idx = 0;
         for i in 1..input.len() {
-            match ArgConfig::try_load(&input[i], &mut cfg) {
+            match RppdConfig::try_load(&input[i], &mut cfg) {
                 Ok(_) => {
                     if cfg.len() > 0 {
                         file_idx = i;
                         break;
                     }
                 }
-                Err(e) => {}
+                Err(_e) => {}
             }
         }
-        let def = ArgConfig::default();
+        let def = RppdConfig::default();
         let mut user = def.user.clone();
         let mut db_url = def.db_url.clone();
         let mut pwd = def.pwd.clone();
         let file = if file_idx > 0 { Some((&input[file_idx]).to_string()) } else { None };
         let mut schema = def.schema.clone();
-        let mut this = def.this.clone();
+        let mut name = def.name.clone();
+        let mut node = def.node.clone();
+        let mut cluster = def.cluster.clone();
         let mut bind = def.bind.clone();
         let mut port = DEFAULT_PORT;
         let mut force_master = false;
 
         for i in 1..input.len() {
             if i != file_idx {
-                if let Some(v) = ArgConfig::try_parse_env(&cfg, "PGUSER") {
+                if let Some(v) = RppdConfig::try_parse_env(&cfg, "PGUSER") {
                     user = v;
-                } else if let Some(v) = ArgConfig::try_parse_env(&cfg, "PGPASSWORD") {
+                } else if let Some(v) = RppdConfig::try_parse_env(&cfg, "PGPASSWORD") {
                     pwd = v;
-                } else if let Some(v) = ArgConfig::try_parse_cfg(&input[i], &cfg, "postgresql://", URL) {
+                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "postgresql://", URL) {
                     db_url = v;
                 } else if input[i].starts_with("--force_master=") {
                     force_master = input[i].ends_with("=true") || input[i].ends_with("=yes");
                 } else if input[i].starts_with("--name=") {
                     let v: Vec<&str> = input[i].split("=").collect();
-                    if v.len() > 1 { this = v[1].to_string(); }
-                } else if let Some(v) = ArgConfig::try_parse_cfg(&input[i], &cfg, ":", BIND) {
+                    if v.len() > 1 { name = v[1].to_string(); }
+                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, ":", BIND) {
                     let b: Vec<&str> = v.split(":").collect();
                     bind = b[0].to_string();
-                    match b[1].parse::<u16>() {
-                        Ok(v) => { port = v; }
-                        Err(e) => {
-                            return Err(fl!("err-wrong-port-format", string = e.to_string(), value = v));
+                    if b.len() > 1 {
+                        match b[1].parse::<u16>() {
+                            Ok(v) => { port = v; }
+                            Err(e) => {
+                                return Err(fl!("err-wrong-port-format", string = e.to_string(), value = v));
+                            }
                         }
                     }
-                } else if let Some(v) = ArgConfig::try_parse_cfg(&input[i], &cfg, "", SCHEMA) {
+                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "", SCHEMA) {
                     let s: Vec<&str> = v.split(".").collect();
                     if s.len() > 2 {
                         return Err(fl!("err-wrong-schema-format", string = v));
                     }
                     schema = s[0].to_string();
+                } else if input[i].starts_with("--node=") {
+                    let v: Vec<&str> = input[i].split("=").collect();
+                    if v.len() > 1 { node = Uuid::from_str(v[1]).unwrap_or(node); }
+                } else if input[i].starts_with("--cluster=") {
+                    let v: Vec<&str> = input[i].split("=").collect();
+                    if v.len() > 1 { cluster = Uuid::from_str(v[1]).unwrap_or(cluster); }
                 }
             }
         }
 
-        Ok(ArgConfig { this, db_url, user, pwd, file, schema, bind, port, max_queue_size: ArgConfig::max_queue_size(), force_master })
+        Ok(RppdConfig {
+            node, cluster, name, db_url, user, pwd, file, schema, bind, port, 
+            max_queue_size: RppdConfig::max_queue_size(),
+            force_master })
     }
 
     #[inline]
@@ -189,6 +211,16 @@ impl ArgConfig {
     /// taking values from env, than file
     #[inline]
     fn try_parse_cfg(input: &String, cfg: &HashMap<String, String>, value: &str, name: &str) -> Option<String> {
+        if value.len() == 0 || input.contains(value) {
+            Some(input.to_string())
+        } else {
+            cfg.get(name).map(|v| v.to_string())
+        }
+    }
+
+    /// taking values from env, than file
+    #[inline]
+    fn _try_parse_uu(input: &String, cfg: &HashMap<String, String>, value: &str, name: &str) -> Option<String> {
         if value.len() == 0 || input.contains(value) {
             Some(input.to_string())
         } else {
@@ -213,10 +245,10 @@ impl ArgConfig {
     fn try_load(file: &String, cfg: &mut HashMap<String, String>) -> Result<(), String> {
         let p = Path::new(file);
         if p.is_dir() {
-            ArgConfig::try_load(&format!("{}/{}{}", file, DEFAULT_SCHEMA, CFG_TABLE), cfg)
+            RppdConfig::try_load(&format!("{}/{}{}", file, DEFAULT_SCHEMA, CFG_TABLE), cfg)
         } else if p.is_file() {
             let f = File::open(file).map_err(|e| e.to_string())?;
-            ArgConfig::load(f, cfg);
+            RppdConfig::load(f, cfg);
             Ok(())
         } else {
             Err("wrong format".into())
@@ -239,6 +271,8 @@ impl ArgConfig {
         }
     }
 
+
+    #[allow(dead_code)]
     fn parse_table_name(src: &String, t: &String) -> String {
         if t.len() >= 1 {
             if t.ends_with(".") {
@@ -281,7 +315,7 @@ mod tests {
         let f = format!("/tmp/yt-{}.cfg", uuid());
         fs::write(&f, "db=p\nconfig=c").ok();
         let cfg = ["test".to_string(), f.clone()].to_vec();
-        let cfg = ArgConfig::new(cfg).unwrap();
+        let cfg = RppdConfig::new(cfg).unwrap();
         assert_eq!(cfg.db_url.as_str(), "p");
         assert_eq!(cfg.schema.as_str(), "public");
         fs::remove_file(&f).ok();
@@ -292,7 +326,7 @@ mod tests {
         let f = format!("/tmp/yt-{}.cfg", uuid());
         fs::write(&f, "db = p\nconfig : c").ok();
         let cfg = ["test".to_string(), f.clone()].to_vec();
-        let cfg = ArgConfig::new(cfg).unwrap();
+        let cfg = RppdConfig::new(cfg).unwrap();
         assert_eq!(cfg.db_url.as_str(), "p");
         assert_eq!(cfg.schema.as_str(), "public.c");
         fs::remove_file(&f).ok();
@@ -301,14 +335,14 @@ mod tests {
     #[test]
     fn config_args_1_test() {
         let cfg = ["test".to_string(), "postgresql://db".to_string()].to_vec();
-        let cfg = ArgConfig::new(cfg).unwrap();
+        let cfg = RppdConfig::new(cfg).unwrap();
         assert_eq!(cfg.db_url.as_str(), "postgresql://db");
     }
 
     #[test]
     fn config_args_2_test() {
         let cfg = ["test".to_string(), "postgresql://db".to_string(), "c".to_string()].to_vec();
-        let cfg = ArgConfig::new(cfg).unwrap();
+        let cfg = RppdConfig::new(cfg).unwrap();
         assert_eq!(cfg.db_url.as_str(), "postgresql://db");
         assert_eq!(cfg.schema.as_str(), "c");
     }
@@ -316,19 +350,19 @@ mod tests {
     #[test]
     fn config_args_3_test() {
         let cfg = ["test".to_string(), "db".to_string(), "c".to_string(), "c".to_string(), "c".to_string()].to_vec();
-        assert!(ArgConfig::new(cfg).is_err())
+        assert!(RppdConfig::new(cfg).is_err())
     }
 
     #[test]
     fn config_args_4_test() {
-        assert!(ArgConfig::new(vec![]).is_ok())
+        assert!(RppdConfig::new(vec![]).is_ok())
     }
 
 
     #[test]
     fn config_args_5_test() {
         let cfg = ["test".to_string(), "--force_master=true".to_string(), "postgresql://db".to_string(), "c".to_string()].to_vec();
-        let cfg = ArgConfig::new(cfg).unwrap();
+        let cfg = RppdConfig::new(cfg).unwrap();
         assert_eq!(cfg.db_url.as_str(), "postgresql://db");
         assert_eq!(cfg.schema.as_str(), "c");
         assert!(cfg.force_master);
@@ -336,13 +370,13 @@ mod tests {
 
     #[test]
     fn config_args_parsing_test() {
-        assert_eq!("".to_string(), ArgConfig::parse_table_name(&"".to_string(), &"".to_string()));
+        assert_eq!("".to_string(), RppdConfig::parse_table_name(&"".to_string(), &"".to_string()));
         assert_eq!(format!("s.{}", CFG_TABLE),
-                   ArgConfig::parse_table_name(&"".to_string(), &"s.".to_string()));
+                   RppdConfig::parse_table_name(&"".to_string(), &"s.".to_string()));
         assert_eq!(format!("{}.t", DEFAULT_SCHEMA),
-                   ArgConfig::parse_table_name(&"".to_string(), &".t".to_string()));
+                   RppdConfig::parse_table_name(&"".to_string(), &".t".to_string()));
         assert_eq!(format!("{}.t", DEFAULT_SCHEMA),
-                   ArgConfig::parse_table_name(&"".to_string(), &"t".to_string()));
+                   RppdConfig::parse_table_name(&"".to_string(), &"t".to_string()));
     }
 
     #[test]
