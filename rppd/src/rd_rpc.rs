@@ -3,7 +3,8 @@
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
-use slog::info;
+use etcd::queue::QueueNameKey;
+use slog::{debug, info};
 use tonic::{Request, Response, Status};
 use rppd_common::protogen::rppc::{DbAction, DbEventRequest, DbEventResponse, PkColumn, PkColumnType, StatusRequest, StatusResponse};
 use rppd_common::protogen::rppc::pk_column::PkValue;
@@ -27,7 +28,11 @@ pub(crate) enum ScheduleResult {
 impl RppdNode for RppdNodeCluster {
     async fn message(&self, request: Request<MessageRequest>) -> Result<Response<MessageResponse>, Status> {
         let request = request.into_inner();
-        let fns = self.check_fn(&request.key).await;
+        let qn = QueueNameKey::new(request.key.clone());
+
+        debug!(self.log, "get notify on {}", &request.key);
+
+        let fns = self.check_fn(&qn.name()).await;
         if fns.len() > 0 {
             if let ScheduleResult::Some(fn_logs) = self.prepare(fns, &vec![
                 PkColumn {
@@ -40,7 +45,10 @@ impl RppdNode for RppdNodeCluster {
                     let _ = self.queueing(fn_log, false).await; // build a queue
                 }
             }
+        } else {
+            debug!(self.log, "no consumer for {}", &request.key);
         }
+
         Ok(Response::new(MessageResponse { }))
     }
 
@@ -121,6 +129,7 @@ impl RppdNodeCluster {
             if request.table_name.starts_with(&self.cfg.schema) {
                 if request.optional_caller.is_none() {
                     // TODO broadcast to cluster, set optional_caller to this as master
+                    
                 }
 
                 if let Err(e) = if request.table_name.ends_with(CFG_TABLE) {

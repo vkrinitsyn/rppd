@@ -67,15 +67,16 @@ pub const VALUE: &str = "VALUE";
 impl RppdNodeCluster {
     /// create Python runtime and DB connection
     #[inline]
-    pub(crate) async fn new_py_context(&self, f: &RpFn, db_url: &String) -> Result<PyContext, PyErr> {
+    pub(crate) async fn new_py_context(&self, f: &RpFn) -> Result<PyContext, PyErr> {
+        let db_url = self.cfg.db_url();
         let module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
             Ok(PyModule::import(py, POSTGRES_PY)?.into())
         })?;
 
+        // connect to DB
         // let libpq_kv = format!("host=localhost sslmode=disable user={} password={} dbname={}", username, password, db);
         let client: PyObject = Python::with_gil(|py| -> PyResult<_> {
-            // Borrows a GIL-bound reference as PyAny. 
-            Ok(module.bind_borrowed(py).getattr("connect")?.call1((db_url,))?.into())
+            Ok(module.bind_borrowed(py).getattr("connect")?.call1((&db_url,))?.into())
         })?;
 
         let etcd_module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
@@ -86,7 +87,9 @@ impl RppdNodeCluster {
             let etcd = self.etcd.read().await;
             (etcd.host.clone(), etcd.port.clone())
         };
-        
+
+        // connect to ETCD
+        // see https://github.com/lupko/etcd3-client/blob/master/src/etcd3/client.py#L120
         let etcd_client: Result<PyObject, PyErr> = Python::with_gil(|py| -> PyResult<_> {
             Ok(etcd_module.bind_borrowed(py).getattr("client")?
                 .call( (host.clone(), port.clone()), None)?.into())

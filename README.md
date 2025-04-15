@@ -23,6 +23,7 @@ https://grpc.io/docs/protoc-installation/
 To build the project requirements
 ```shell
 git clone https://github.com/lupko/etcd3-client.git
+cd etcd3-client
 pip install .
 pip install typing-extensions
 ```
@@ -91,7 +92,8 @@ DB -- database connection
 TOPIC -- fc.fns.topic
 TABLE -- fc.fns.schema_table
 TRIG -- UPDATE = 0;  INSERT = 1;  DELETE = 2;  TRUNCATE = 3;
-"COLUMN_NAME" --i.e. "ID" = see trig_value (up to 3)
+"COLUMN_NAME" --i.e. "ID" = see trig_value
+ETCD -- The etcd client
 ```
 
 ### python example:
@@ -131,9 +133,23 @@ if len(input) > 0:
     DB.commit()
 ```
 
+### etcd test example:
+```sql
+\set code `cat test_fn_etcd.py`
+insert into rppd_function (code, checksum, schema_table, topic, verbose_debug, cleanup_logs_min) values (:'code', 'na', '/q/test', '', true, 100);
+```
+run
+```python
+ETCD = etcd3.client("localhost", 8881)
+ETCD.put('/q/test/producer/111', 'test key to etcd queue')
+```
+check
+```sql
+select * from test_sink;
+``
+
 
 ## TODO - features and improvements 
-- Cleanup saved Python function logs
 - Connect to multiple DB (rw/ro - replica)
 - Monitoring cadence
 - OpenTelemetry integration

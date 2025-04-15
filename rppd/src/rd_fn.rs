@@ -138,7 +138,7 @@ pub struct RpFnLog {
     #[sqlx(skip)] /// transient copy from RpFn
     pub(crate) fn_idp: Option<RpFnId>,
 
-    pub(crate) took_sec: Option<i32>,
+    pub(crate) took_ms: Option<i64>,
 
     pub(crate) trig_value: Option<sqlx::types::Json<HashMap<String, String>>>,
     #[sqlx(skip)] /// use for etcd KV
@@ -161,7 +161,7 @@ impl Default for RpFnLog {
             started: None,
             uuid: None,
             fn_idp: Some(RpFnId::default()),
-            took_sec: None,
+            took_ms: None,
             trig_value: None,
             value: None,
             rn_fn_id: None,
@@ -301,7 +301,7 @@ impl RpFn {
     }
 }
 
-const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, started_at, took_sec, error_msg from %SCHEMA%.rppd_function_log ";
+const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, started_at, took_ms, error_msg from %SCHEMA%.rppd_function_log ";
 
 const INSERT_LOG_V: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type, trig_value) values ($1, $2, $3, $4) returning id";
 const INSERT_LOG: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type) values ($1, $2, $3) returning id";
@@ -349,12 +349,12 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) async fn update(&self, took: u64, r: Option<String>, db: Pool<Postgres>, schema: &String, log: &Logger) {
+    pub(crate) async fn update(&self, took: i64, r: Option<String>, db: Pool<Postgres>, schema: &String, log: &Logger) {
         if self.id == 0 { return; }
-        let sql = "update %SCHEMA%.rppd_function_log set took_sec = $1, error_msg = $2 where id = $3";
+        let sql = "update %SCHEMA%.rppd_function_log set took_ms = $1, error_msg = $2 where id = $3";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
         if let Err(e) = sqlx::query(sql.as_str())
-            .bind(took as i32)
+            .bind(took)
             .bind(r)
             .bind(self.id)
             .execute(&db).await {

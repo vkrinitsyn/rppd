@@ -85,6 +85,7 @@ pub fn logger() -> Logger {
 #[inline]
 #[cfg(debug_assertions)]
 fn severity() -> Severity {
+    // Severity::Trace
     Severity::Debug
 }
 

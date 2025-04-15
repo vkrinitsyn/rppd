@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use slog::{crit, debug, error, info, warn, Logger};
+use slog::{crit, debug, error, info, trace, warn, Logger};
 use sqlx::{Pool, Postgres};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -292,6 +292,7 @@ impl RppdNodeCluster {
         }
         self.fns.write().await.retain(|k, _v| loaded.contains(&RpFnId { id: *k, ..RpFnId::default() }));
         info!(self.log, "loaded {} function(s) for {} table(s) and {} topic(s)", self.fns.read().await.len(), self.fn_tt.read().await.len(), self.fn_id.read().await.len(), );
+        trace!(self.log, "loaded [{:?}] function(s) for [{:?}] table(s) and [{:?}] topic(s)", self.fns.read().await, self.fn_tt.read().await, self.fn_id.read().await);
         Ok(())
     }
 
@@ -317,7 +318,7 @@ impl RppdNodeCluster {
         let mut master = false; // master is present and up
         let mut found_self = false; // is self registered
         let mut found_self_master = false; // is self registered
-        let mut id = 0; 
+        let mut id = 0;
         let mut master_id = 0;
         for n in r {
             if n.master.unwrap_or(false) {
@@ -418,6 +419,7 @@ impl RppdNodeCluster {
     pub(crate) async fn check_fn(&self, table_name: &String) -> BTreeMap<i32, RpFnId> {
         let mut fn_ids = BTreeMap::new();
         if let Some(topics) = self.fn_tt.read().await.get(table_name) {
+            trace!(self.log, "found topics [{:?}] for {}", topics, table_name);
             for topic in topics {
                 if let Some(t) = self.fn_id.read().await.get(topic) {
                     for fid in t {
@@ -464,7 +466,7 @@ impl RppdNodeCluster {
                         id: 0,
                         node_id: node_id.clone(),
                         fn_id: f.id,
-                        took_sec: None,
+                        took_ms: None,
                         uuid: None,
                         value: value.clone(), // None for db trigger, one
                         rn_fn_id: Some(rn_fn_id.clone()),
@@ -481,6 +483,7 @@ impl RppdNodeCluster {
         }
 
         if non_pk_column.len() > 0 {
+            trace!(self.log, "prepared to repeat {:?}", non_pk_column);
             return Ok(ScheduleResult::Repeat(non_pk_column));
         }
 
@@ -508,6 +511,7 @@ impl RppdNodeCluster {
                 };
             }
         }
+        trace!(self.log, "prepared ok[{}]", res.len());
         Ok(ScheduleResult::Some(res))
     }
 
@@ -557,7 +561,7 @@ impl RppdNodeCluster {
 
         // load messages to internal queue from fn_log, check timeout and execution status,
         for l in sqlx::query_as::<_, RpFnLog>(
-            format!("{} where took_sec is null order by id", RpFnLog::select(&self.cfg.schema)).as_str())
+            format!("{} where took_ms is null order by id", RpFnLog::select(&self.cfg.schema)).as_str())
             .fetch_all(&self.db()).await.map_err(|e| e.to_string())? {
             self.queueing(l, false).await; // append loaded on startup
         }
@@ -575,7 +579,7 @@ impl RppdNodeCluster {
     /// call by receive
     #[inline]
     async fn execute(&self, f: Option<RpFnLog>) {
-        debug!(self.log, "invoke {:?}", f);
+        trace!(self.log, "invoke {:?}", f);
         let f = match f {
             None => match self.queue.write().await.pick_one() {
                 None => { // nothing to execute from topics or not ready as a queue
@@ -597,7 +601,7 @@ impl RppdNodeCluster {
             Some(f) => f
         };
 
-        if f.took_sec.is_some() { // the function execution already completed
+        if f.took_ms.is_some() { // the function execution already completed
             if !self.master.load(Ordering::Relaxed) {
                 if let Some(node) = self.node_connections.read().await.get(&self.master_id.load(Ordering::Relaxed)) {
                     if let Ok(master) = node {
@@ -638,8 +642,8 @@ impl RppdNodeCluster {
                 }
                 let p = match c {
                     None => {
-                        let p = match self.new_py_context(&fc, &self.cfg.db_url()).await
-                            .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url(), e)) {
+                        let p = match self.new_py_context(&fc).await
+                            .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url, e)) {
                             Ok(p) => p,
                             Err(e) => {
                                 f.update_err(e, self.db(), &self.cfg.schema, &self.log).await;
@@ -676,12 +680,12 @@ impl RppdNodeCluster {
                         Err(e) => error!(log, "executed notOK#{} {} {}", fc.schema_table, fc.topic, e),
                     }
                     
-                    let sec = started.elapsed().as_secs();
+                    let sec = started.elapsed().as_millis() as i64;
                     f.update(sec, r.err(), db, &schema, &log).await;
                     exec.write().await.push_front(p);
                     run.fetch_sub(1, Ordering::Relaxed);
                     if let Err(e) =
-                        queue.send(Some(RpFnLog { took_sec: Some(sec as i32), ..f })).await {
+                        queue.send(Some(RpFnLog { took_ms: Some(sec), ..f })).await {
                         warn!(log, "{}", e);
                     }
                 });
@@ -694,6 +698,7 @@ impl RppdNodeCluster {
     // TODO link the queue (if use) to the node, if that node no longer available, than link to another one
     #[inline]
     pub(crate) async fn queueing(&self, l: RpFnLog, push_back: bool) {
+        trace!(self.log, "queueing {:?}", l);
         let (topic, fn_id, tbl) = if let Some(f) = self.fns.read().await.get(&l.fn_id) {
             (f.to_topic(&l), l.fn_idp.to_owned().unwrap_or(RpFnId::fromf(f)), f.schema_table.clone())
         } else { ("".to_string(), RpFnId::default(), "".to_string()) }; // should not happens
