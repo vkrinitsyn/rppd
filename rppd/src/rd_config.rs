@@ -435,8 +435,13 @@ impl RppdNodeCluster {
     /// synchroniously on client DB transaction store log, if configured
     // TODO if requested from master, than perform queueing
     #[inline]
-    pub(crate) async fn prepare(&self, fn_ids: BTreeMap<i32, RpFnId>, pks: &Vec<PkColumn>, event: DbAction, value: &Option<Vec<u8>>)
-        -> Result<ScheduleResult, String> {
+    pub(crate) async fn prepare(&self,
+                                fn_ids: BTreeMap<i32, RpFnId>,
+                                pks: &Vec<PkColumn>,
+                                event: DbAction,
+                                value: &Option<(String, Vec<u8>)>
+    ) -> Result<ScheduleResult, String>
+    {
         debug_assert!(fn_ids.len() > 0);
         let mut non_pk_column = vec![];
         let mut fn_logs = vec![];
@@ -468,7 +473,8 @@ impl RppdNodeCluster {
                         fn_id: f.id,
                         took_ms: None,
                         uuid: None,
-                        value: value.clone(), // None for db trigger, one
+                        key: value.as_ref().map(|(k, _)| k.clone()), // None for db trigger, one
+                        value: value.as_ref().map(|(_, v)| v.clone()), // None for db trigger, one
                         rn_fn_id: Some(rn_fn_id.clone()),
                         trig_type: event as i32,
                         trig_value: Some(sqlx::types::Json::from(trig_value.clone())),
@@ -671,8 +677,8 @@ impl RppdNodeCluster {
                     let r = p.lock().await.invoke(&f, &fc);
 
                     #[cfg(not(feature = "etcd-external"))]
-                    if fc.is_etcd_queue() && fc.queue {
-                        etcd.read().await.aks(&fc.schema_table).await;
+                    if let Some(key) = &f.key {
+                        etcd.read().await.aks(key).await;
                     }
 
                     match &r {

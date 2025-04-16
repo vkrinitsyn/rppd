@@ -138,15 +138,18 @@ if len(input) > 0:
 \set code `cat test_fn_etcd.py`
 insert into rppd_function (code, checksum, schema_table, topic, verbose_debug, cleanup_logs_min) values (:'code', 'na', '/q/test', '', true, 100);
 ```
+
 run
 ```python
+import etcd3
 ETCD = etcd3.client("localhost", 8881)
-ETCD.put('/q/test/producer/111', 'test key to etcd queue')
+ETCD.put('/q/test/producer/111', 'test kv to etcd queue')
 ```
+
 check
 ```sql
-select * from test_sink;
-``
+select * from test_sink where data like '/q/%';
+```
 
 
 ## TODO - features and improvements 
