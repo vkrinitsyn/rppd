@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+# this is a script to run RPPD DB test by inserting into DB
 import psycopg2
 
 def run():

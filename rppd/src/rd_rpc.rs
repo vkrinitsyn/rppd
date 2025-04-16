@@ -30,7 +30,7 @@ impl RppdNode for RppdNodeCluster {
         let request = request.into_inner();
         let qn = QueueNameKey::new(request.key.clone());
 
-        debug!(self.log, "get notify on {}", &request.key);
+        trace!(self.log, "get notify on {}", &request.key);
 
         let fns = self.check_fn(&qn.name()).await;
         if fns.len() > 0 {
@@ -40,7 +40,7 @@ impl RppdNode for RppdNodeCluster {
                     column_type: PkColumnType::String as i32,
                     pk_value: Some(PkValue::StringValue(request.key.clone())),
                 }
-            ], DbAction::Dual, &Some(request.value)).await.map_err(|e| Status::internal(e))? {
+            ], DbAction::Dual, &Some((request.key, request.value))).await.map_err(|e| Status::internal(e))? {
                 for fn_log in fn_logs {
                     let _ = self.queueing(fn_log, false).await; // build a queue
                 }

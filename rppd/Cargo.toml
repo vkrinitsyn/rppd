@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 
 [dependencies]
-slog = { version = "2.7.0", features=["default"] }
+slog = { version = "2.7.0", features=["default", "max_level_trace", "release_max_level_info"] }
 sloggers = "2.2.0"
 chrono = { version = "0.4.19", features = ["serde"] }
 tokio = { version = "1.25.0", features = ["macros", "rt-multi-thread", "net", "rt", "fs", "time", "signal", "signal-hook-registry" ] }
@@ -33,7 +33,8 @@ bb8-postgres = {version = "0.9.0", features = ["with-chrono-0_4","with-uuid-0_8"
 thiserror = "*"
 pyo3 = { version = "^0.24", features = ["auto-initialize", "uuid"] }
 
-etcd = {git = "https://github.com/vkrinitsyn/etcd.git"}
+#etcd = {git = "https://github.com/vkrinitsyn/etcd.git"}
+etcd = {path = "../../etcd"}
 etcd-client = { version = "0.14.1", optional = true}
 
 sqlx = { version = "0.8.3", features = ["postgres", "runtime-tokio", "chrono"] }

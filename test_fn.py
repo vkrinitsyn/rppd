@@ -1,3 +1,5 @@
+# this example triggered by DB trigger
+
 import os
 
 cur = DB.cursor()

@@ -142,6 +142,8 @@ pub struct RpFnLog {
 
     pub(crate) trig_value: Option<sqlx::types::Json<HashMap<String, String>>>,
     #[sqlx(skip)] /// use for etcd KV
+    pub(crate) key: Option<String>,
+    #[sqlx(skip)] /// use for etcd KV
     pub(crate) value: Option<Vec<u8>>,
     #[sqlx(skip)] /// transient copy from RpFn
     pub(crate) rn_fn_id: Option<RpFnId>,
@@ -163,6 +165,7 @@ impl Default for RpFnLog {
             fn_idp: Some(RpFnId::default()),
             took_ms: None,
             trig_value: None,
+            key: None,
             value: None,
             rn_fn_id: None,
             trig_type: 0,

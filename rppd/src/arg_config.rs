@@ -70,6 +70,7 @@ pub struct RppdConfig {
     /// MAX_QUEUE_SIZE
     pub max_queue_size: usize,
     pub force_master: bool,
+    pub verbose: bool,
 }
 
 impl Default for RppdConfig {
@@ -103,6 +104,7 @@ impl Default for RppdConfig {
             port: DEFAULT_PORT,
             max_queue_size: RppdConfig::max_queue_size(),
             force_master: false,
+            verbose: false,
         }
     }
 }
@@ -153,10 +155,13 @@ impl RppdConfig {
         let mut bind = def.bind.clone();
         let mut port = DEFAULT_PORT;
         let mut force_master = false;
+        let mut verbose = false;
 
         for i in 1..input.len() {
             if i != file_idx {
-                if let Some(v) = RppdConfig::try_parse_env(&cfg, "PGUSER") {
+                if input[i].as_str() == "--verbose" {
+                    verbose = true;
+                } else if let Some(v) = RppdConfig::try_parse_env(&cfg, "PGUSER") {
                     user = v;
                 } else if let Some(v) = RppdConfig::try_parse_env(&cfg, "PGPASSWORD") {
                     pwd = v;
@@ -197,7 +202,9 @@ impl RppdConfig {
         Ok(RppdConfig {
             node, cluster, name, db_url, user, pwd, file, schema, bind, port, 
             max_queue_size: RppdConfig::max_queue_size(),
-            force_master })
+            force_master,
+            verbose,
+        })
     }
 
     #[inline]

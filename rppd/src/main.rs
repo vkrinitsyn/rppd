@@ -32,7 +32,8 @@ compile_error!("only etcd-embeded or etcd-external feature can be enabled at thi
 /// db connection is required
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() -> Result<(), String> {
-    let log = logger();
+    let log = logger(true);
+
     let app_name = fl!("rppd-name");
     info!(log, "{} {}", app_name, env!("CARGO_PKG_VERSION"));
     info!(log, "{}", fl!("rppd-about"));
@@ -40,6 +41,7 @@ async fn main() -> Result<(), String> {
     let input: Vec<String> = std::env::args_os().map(|e| e.to_string_lossy().to_string()).collect();
     match RppdConfig::new(input) {
         Ok(c) => {
+            let log = logger(c.verbose);
             let srv = RppdNodeCluster::init(c, log.clone()).await?;
             let _ = srv.serve().await?;
             let sht = wait_for_signal().await;
@@ -66,7 +68,7 @@ async fn wait_for_signal() -> Result<String, String> {
     Ok(sig.to_string())
 }
 
-pub fn logger() -> Logger {
+pub fn logger(verbose: bool) -> Logger {
     let mut builder = TerminalLoggerBuilder::new();
     builder.channel_size(10240);
     builder.destination(Destination::Stdout);
@@ -77,21 +79,22 @@ pub fn logger() -> Logger {
     #[cfg(not(debug_assertions))]
     builder.source_location(SourceLocation::None);
 
-    builder.level(severity());
+    builder.level(severity(verbose));
     builder.overflow_strategy(sloggers::types::OverflowStrategy::Drop);
     builder.build().unwrap()
 }
 
 #[inline]
 #[cfg(debug_assertions)]
-fn severity() -> Severity {
-    // Severity::Trace
-    Severity::Debug
+fn severity(verbose: bool) -> Severity {
+    if verbose { Severity::Trace }
+    else { Severity::Debug }
 }
 
 #[cfg(not(debug_assertions))]
-fn severity() -> Severity {
-    Severity::Info
+fn severity(verbose: bool) -> Severity {
+    if verbose { Severity::Debug }
+    else { Severity::Info }
 }
 
 #[cfg(test)]
