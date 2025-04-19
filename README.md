@@ -60,6 +60,7 @@ cargo install cargo-pgrx --force && cargo pgrx init
 ## Usage
 
 1. Create postgres extension: copy rppd.so and create few tables in desired schema
+ > create extension 
  > cp -f target/debug/librppd.so /usr/lib/postgresql/14/lib/rppd.so
 
 2. Run as many service as required:
