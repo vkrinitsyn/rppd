@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use etcd::queue::QueueNameKey;
-use slog::{debug, info};
+use slog::{debug, info, trace};
 use tonic::{Request, Response, Status};
 use rppd_common::protogen::rppc::{DbAction, DbEventRequest, DbEventResponse, PkColumn, PkColumnType, StatusRequest, StatusResponse};
 use rppd_common::protogen::rppc::pk_column::PkValue;
