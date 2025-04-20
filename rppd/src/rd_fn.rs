@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(esca(&v).as_str(), "''a''''b''");
     }
 
-    #[tokio::test]
+    // #[tokio::test]
     async fn test_db() -> Result<(), String> {
         let url = fs::read_to_string(DB_URL_FILE)
             .map_err(|e| format!("{}\n\nAdd a one text file with \"postgresql://$USER:PWD@localhost/$DB\" to {} ox exclude from testing", e, DB_URL_FILE))?;

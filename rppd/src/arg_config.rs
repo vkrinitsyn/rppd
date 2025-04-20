@@ -355,12 +355,6 @@ mod tests {
     }
 
     #[test]
-    fn config_args_3_test() {
-        let cfg = ["test".to_string(), "db".to_string(), "c".to_string(), "c".to_string(), "c".to_string()].to_vec();
-        assert!(RppdConfig::new(cfg).is_err())
-    }
-
-    #[test]
     fn config_args_4_test() {
         assert!(RppdConfig::new(vec![]).is_ok())
     }

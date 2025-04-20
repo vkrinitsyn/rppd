@@ -31,6 +31,8 @@ use crate::arg_config::RppdConfig;
 use crate::rd_config::RppdNodeCluster;
 use crate::rd_fn::RpFn;
 
+#[cfg(all(feature = "etcd-embeded", feature = "etcd-provided", feature = "etcd-external"))]
+compile_error!("only single etcd-embeded or etcd-provided or etcd-external feature can be enabled at the same time");
 #[cfg(all(feature = "etcd-embeded", feature = "etcd-provided"))]
 compile_error!("only single etcd-embeded or etcd-provided feature can be enabled at the same time");
 #[cfg(all(feature = "etcd-external", feature = "etcd-provided"))]
@@ -99,11 +101,13 @@ impl EtcdConnector {
         EtcdConnector {
             etcd: Ok(node),
             client_id: c.node.clone(),
+            host: c.bind.clone(),
+            port: c.port.to_string(),
             log: log.clone(),
         }
     }
 
-    /// TODO implement etcd login capabilities to vanila implementation
+    /// TODO implement etcd login&pwd capabilities to vanila implementation
     #[cfg(feature = "etcd-external")]
     pub(crate) async fn connect(cfg: &RppdConfig, log: &Logger) -> Self {
         let endpoint = std::env::var_os("ETCD_ENDPOINT")
