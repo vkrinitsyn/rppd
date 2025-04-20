@@ -131,3 +131,14 @@ impl RppdNodeCluster {
     }
 }
 
+
+
+#[cfg(test)]
+mod tests {
+    #![allow(warnings, unused)]
+
+    #[tokio::test]
+    async fn test_compile() {
+        assert!(true);
+    }
+}
