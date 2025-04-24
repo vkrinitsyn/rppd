@@ -6,12 +6,13 @@ use async_trait::async_trait;
 use etcd::queue::QueueNameKey;
 use slog::{debug, info, trace};
 use tonic::{Request, Response, Status};
+use rppd_common::CFG_TABLE;
 use rppd_common::protogen::rppc::{DbAction, DbEventRequest, DbEventResponse, PkColumn, PkColumnType, StatusRequest, StatusResponse};
 use rppd_common::protogen::rppc::pk_column::PkValue;
 use rppd_common::protogen::rppd::rppd_node_server::RppdNode;
 use rppd_common::protogen::rppd::{MessageRequest, MessageResponse, SwitchRequest, SwitchResponse};
 use rppd_common::protogen::rppg::rppd_trigger_server::RppdTrigger;
-use crate::arg_config::{CFG_CRON_TABLE, CFG_FN_TABLE, CFG_TABLE};
+use crate::arg_config::{CFG_CRON_TABLE, CFG_FN_TABLE};
 use crate::rd_config::RppdNodeCluster;
 use crate::rd_fn::RpFnLog;
 
@@ -69,6 +70,7 @@ impl RppdNode for RppdNodeCluster {
         if !self.master.load(Ordering::Relaxed) {
             let ctx = self.clone();
             let master = request.into_inner();
+
             tokio::spawn(async move {
                 ctx.become_master(Some(master.node_id)).await;
             });

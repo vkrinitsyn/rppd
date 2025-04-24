@@ -8,13 +8,14 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::str::FromStr;
 use uuid::Uuid;
+use rppd_common::CFG_TABLE;
 use crate::fl;
 
 /// DEFAULT_SCHEMA_TABLEe: ytcc::DEFAULT_SCHEMA . ytcc::DEFAULT_TABLE)
 // pub const DEFAULT_DB_URL: &str = "postgresql://postgres@postgres?host=/var/run/postgresql";
 pub const DEFAULT_DB_URL: &str = "postgresql://$USER@$USER?host=/var/run/postgresql";
 pub const DEFAULT_SCHEMA: &str = "rppd.";
-pub const CFG_TABLE: &str = "rppd_config";
+
 pub const CFG_FN_TABLE: &str = "rppd_function";
 pub const CFG_FNL_TABLE: &str = "rppd_function_log";
 pub const CFG_CRON_TABLE: &str = "rppd_cron";
@@ -60,6 +61,7 @@ pub struct RppdConfig {
     /// The readable name for a node host instance.
     pub name: String,
     pub schema: String,
+    pub table: String,
     pub db_url: String,
     pub user: String,
     pub pwd: String,
@@ -100,6 +102,7 @@ impl Default for RppdConfig {
             pwd,
             file: None,
             schema: "public".to_string(),
+            table: CFG_TABLE.to_string(),
             bind: LOCALHOST.to_string(),
             port: DEFAULT_PORT,
             max_queue_size: RppdConfig::max_queue_size(),
@@ -121,6 +124,8 @@ impl Display for RppdConfig {
 }
 
 impl RppdConfig {
+    #[cfg(not(feature = "lib-embeded"))]
+
     /// first arg is an app itself
     pub fn new(input: Vec<String>) -> Result<Self, String> {
         
@@ -200,7 +205,9 @@ impl RppdConfig {
         }
 
         Ok(RppdConfig {
-            node, cluster, name, db_url, user, pwd, file, schema, bind, port, 
+            node, cluster, name, db_url, user, pwd, file,
+            schema, table: CFG_TABLE.to_string(),
+            bind, port,
             max_queue_size: RppdConfig::max_queue_size(),
             force_master,
             verbose,

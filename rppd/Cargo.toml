@@ -34,7 +34,6 @@ thiserror = "*"
 pyo3 = { version = "^0.24", features = ["auto-initialize", "uuid"] }
 
 etcd = {git = "https://github.com/vkrinitsyn/etcd.git"}
-#etcd = {path = "../../etcd"}
 etcd-client = { version = "0.14.1", optional = true}
 
 sqlx = { version = "0.8.3", features = ["postgres", "runtime-tokio", "chrono"] }
@@ -62,6 +61,9 @@ etcd-provided = []
 # use external etcd server, like valilla implementation. Require etcd client configuration (not fully implemented in RPPD)
 # queue messaging wont work in this case, only subscription to key change i.e. topic
 etcd-external = ["dep:etcd-client"]
+
+# The RPPD use as a library with config table extranally provided
+lib-embeded = []
 
 
 [profile.dev]

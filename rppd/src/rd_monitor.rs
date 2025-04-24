@@ -167,7 +167,8 @@ impl RppdNodeCluster {
     pub(crate) async fn start_monitoring(&self) {
         let node_id = self.node_id.load(Ordering::Relaxed);
         info!(self.log, "start_monitoring node {}", node_id);
-        let sql_id = SELECT_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
+        let sql_id = SELECT_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str())
+            .replace("%TABLE%", &self.cfg.table.as_str());
         assert!(MAX_ERRORS > 1);
         let mut prev_db_master = None;
         let mut errors = 0;
@@ -270,10 +271,15 @@ impl RppdNodeCluster {
     }
 
 
+    #[cfg(not(feature = "lib-embeded"))]
     #[inline]
     pub(crate) async fn become_master(&self, prev_db_master: Option<i32>) {
-        let sql_dwn = DWN_MASTER.replace("%SCHEMA%", self.cfg.schema.as_str());
-        let sql_up = UP_MASTER.replace("%SCHEMA%", self.cfg.schema.as_str());
+        let sql_dwn = DWN_MASTER
+            .replace("%SCHEMA%", self.cfg.schema.as_str())
+            .replace("%TABLE%", self.cfg.table.as_str());
+        let sql_up = UP_MASTER
+            .replace("%SCHEMA%", self.cfg.schema.as_str())
+            .replace("%TABLE%", self.cfg.table.as_str());
 
         if let Some(master_id) = prev_db_master { // unregister previous master
             if let Ok(_ok) = sqlx::query(sql_dwn.as_str()).bind(master_id).execute(&self.db()).await {
