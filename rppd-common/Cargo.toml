@@ -1,6 +1,6 @@
 [package]
 name = "rppd-common"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - protibuf types and services"
