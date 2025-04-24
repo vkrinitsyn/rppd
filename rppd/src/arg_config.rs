@@ -1,4 +1,5 @@
 /*%LPH%*/
+#![allow(unused_imports)]
 
 use std::{env, fs};
 use std::collections::HashMap;
@@ -124,7 +125,7 @@ impl Display for RppdConfig {
 }
 
 impl RppdConfig {
-    #[cfg(not(feature = "lib-embeded"))]
+    #[cfg(not(feature = "lib-embedded"))]
 
     /// first arg is an app itself
     pub fn new(input: Vec<String>) -> Result<Self, String> {
@@ -224,6 +225,7 @@ impl RppdConfig {
 
     /// taking values from env, than file
     #[inline]
+    #[cfg(not(feature = "lib-embedded"))]
     fn try_parse_cfg(input: &String, cfg: &HashMap<String, String>, value: &str, name: &str) -> Option<String> {
         if value.len() == 0 || input.contains(value) {
             Some(input.to_string())
@@ -244,6 +246,7 @@ impl RppdConfig {
 
     /// taking values from args, than file
     #[inline]
+    #[cfg(not(feature = "lib-embedded"))]
     fn try_parse_env(cfg: &HashMap<String, String>, name: &str) -> Option<String> {
         let res = env::var_os(name).map(|v| v.to_str().unwrap_or("").to_string());
 
@@ -256,6 +259,7 @@ impl RppdConfig {
 
     ///  - priority is: env, if no set, than param, than file, than default
     #[inline]
+    #[cfg(not(feature = "lib-embedded"))]
     fn try_load(file: &String, cfg: &mut HashMap<String, String>) -> Result<(), String> {
         let p = Path::new(file);
         if p.is_dir() {
@@ -270,6 +274,7 @@ impl RppdConfig {
     }
 
     #[inline]
+    #[cfg(not(feature = "lib-embedded"))]
     fn load(f: File, cfg: &mut HashMap<String, String>) {
         let reader = BufReader::new(f);
         for line in reader.lines() {
@@ -311,6 +316,7 @@ impl RppdConfig {
 
 #[allow(warnings)]
 #[cfg(test)]
+#[cfg(not(feature = "lib-embedded"))]
 mod tests {
     use std::fs;
 

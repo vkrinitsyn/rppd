@@ -71,6 +71,7 @@ impl RppdNode for RppdNodeCluster {
             let ctx = self.clone();
             let master = request.into_inner();
 
+            #[cfg(not(feature = "lib-embedded"))]
             tokio::spawn(async move {
                 ctx.become_master(Some(master.node_id)).await;
             });

@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
@@ -7,8 +8,9 @@ use shims::Histogram;
 use slog::{error, info};
 use tokio::time::sleep;
 use rppd_common::protogen::rppc::{StatusRequest, StatusResponse};
-use crate::rd_config::{RppdNodeCluster, DWN_MASTER, MAX_ERRORS, SELECT_MASTER, TIMEOUT_MS, UP_MASTER};
-use crate::rd_fn::DELETE_LOG;
+#[cfg(not(feature = "lib-embedded"))]
+use crate::rd_config::{DWN_MASTER, MAX_ERRORS, SELECT_MASTER, UP_MASTER};
+use crate::rd_config::{RppdNodeCluster, TIMEOUT_MS};
 
 #[derive(Clone)]
 #[allow(unused_variables, dead_code)]
@@ -63,6 +65,7 @@ pub(crate) struct NodeStat {
 impl NodeStat {
     /// set new value return previous
     #[inline]
+    #[cfg(not(feature = "lib-embedded"))]
     pub(crate) fn weight(&mut self) -> u64 {
         let w = self.weight;
         self.weight = self.queue.median() + self.in_proc.median();
@@ -70,6 +73,7 @@ impl NodeStat {
     }
 
     #[inline]
+    #[cfg(not(feature = "lib-embedded"))]
     pub(crate) fn new_from(s: StatusResponse) -> Self {
         let mut n = NodeStat::default();
         n.node_id = s.node_id;
@@ -82,6 +86,7 @@ impl NodeStat {
 
 impl ClusterStat {
     #[inline]
+    #[cfg(not(feature = "lib-embedded"))]
     fn apply(&mut self, node: i32) {
         if !self.node_stat.contains_key(&node) {
             self.node_stat.insert(node, NodeStat::default());
@@ -103,6 +108,7 @@ impl ClusterStat {
     }
 }
 
+#[cfg(not(feature = "lib-embedded"))]
 fn new_set(node: i32) -> BTreeSet<i32> {
     let mut set = BTreeSet::new();
     set.insert(node.clone());
@@ -164,6 +170,7 @@ impl RppdNodeCluster {
 
 
     /// periodically check master node availability and consistency in DB and memory
+    #[cfg(not(feature = "lib-embedded"))]
     pub(crate) async fn start_monitoring(&self) {
         let node_id = self.node_id.load(Ordering::Relaxed);
         info!(self.log, "start_monitoring node {}", node_id);
@@ -270,8 +277,17 @@ impl RppdNodeCluster {
         }
     }
 
+    #[cfg(feature = "lib-embedded")]
+    pub(crate) async fn start_monitoring(&self) {
+        loop {
+            self.cronjob().await;
+            self.cleanup_fn_logs().await;
+            let _ = sleep(Duration::from_millis(5*TIMEOUT_MS)).await;
+        }
+    }
 
-    #[cfg(not(feature = "lib-embeded"))]
+
+    #[cfg(not(feature = "lib-embedded"))]
     #[inline]
     pub(crate) async fn become_master(&self, prev_db_master: Option<i32>) {
         let sql_dwn = DWN_MASTER
@@ -301,7 +317,7 @@ impl RppdNodeCluster {
 
     /// TODO delete old records
     pub(crate) async fn cleanup_fn_logs(&self) {
-        let sql = DELETE_LOG.replace("%SCHEMA%", self.cfg.schema.as_str());
+        let sql = crate::rd_fn::DELETE_LOG.replace("%SCHEMA%", self.cfg.schema.as_str());
 
         if let Err(e) = sqlx::query(sql.as_str()).execute(&self.db()).await {
             error!(self.log, "Cleanup logs by [{}] {}", sql, e);

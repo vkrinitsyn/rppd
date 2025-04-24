@@ -1,4 +1,5 @@
 /*%LPH%*/
+#![allow(unused_imports)]
 
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -32,18 +33,23 @@ use crate::rd_rpc::ScheduleResult;
 
 
 // use only on start_monitoring on standalon mode
+#[cfg(not(feature = "lib-embedded"))]
 pub(crate) const SELECT_MASTER: &str = "select id from %SCHEMA%.%TABLE% where master";
 // use only on standalon mode
+#[cfg(not(feature = "lib-embedded"))]
 const INSERT_HOST: &str = "insert into %SCHEMA%.%TABLE% (host, host_name, master) values ($1, $2, $3) returning id";
 // use only on standalon mode
+#[cfg(not(feature = "lib-embedded"))]
 pub(crate) const UP_MASTER: &str = "update %SCHEMA%.%TABLE% set master = true where id = $1";
 // use only on standalon mode
 
+#[cfg(not(feature = "lib-embedded"))]
 pub(crate) const DWN_MASTER: &str = "update %SCHEMA%.%TABLE% set master = NULL where master and id = $1";
 
 /// connection timeout. also sleep timeout on monitoring
 pub(crate) const TIMEOUT_MS: u64 = 1000;
 /// max errors including timeout, each attemnt after sleep of timeout, before
+#[cfg(not(feature = "lib-embedded"))]
 pub(crate) const MAX_ERRORS: u8 = 2;
 
 
@@ -127,6 +133,7 @@ pub struct RppdNodeCluster {
 
     /// connections to nodes, mostly use by master
     /// host to node_id
+    #[allow(unused)]
     pub(crate) node_ids: Arc<RwLock<HashMap<HostType, i32>>>,
 
     /// common queue to trigger bg dispatcher
@@ -405,7 +412,6 @@ impl RppdNodeCluster {
                 // drop(ctx); // will flush logger on drop
                 std::process::exit(12);
             }
-            #[cfg(not(feature = "lib-embeded"))]
             tokio::spawn(async move {
                 ctxm.start_monitoring().await;
             });
@@ -530,10 +536,11 @@ impl RppdNodeCluster {
 
 
     /// try to self register as master if needed, return node_id
+    #[allow(unused)]
     async fn start_bg(&self, insert: bool, master: bool) -> Result<(), String> {
         let pool = self.db();
         let host = format!("{}:{}", self.cfg.bind, self.cfg.port);
-        #[cfg(not(feature = "lib-embeded"))]
+        #[cfg(not(feature = "lib-embedded"))]
         {
             if insert {
                 info!(self.log, "Self registering: {} by name: {} {}", host, self.cfg.name, if master { "as master" } else { "" });

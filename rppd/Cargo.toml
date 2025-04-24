@@ -63,7 +63,7 @@ etcd-provided = []
 etcd-external = ["dep:etcd-client"]
 
 # The RPPD use as a library with config table extranally provided
-lib-embeded = []
+lib-embedded = []
 
 
 [profile.dev]

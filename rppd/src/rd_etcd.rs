@@ -120,6 +120,8 @@ impl EtcdConnector {
         EtcdConnector {
             etcd,
             client_id: cfg.node.clone(),
+            host: cfg.bind.clone(),
+            port: cfg.port.to_string(),
             log: log.clone(),
         }
     }
