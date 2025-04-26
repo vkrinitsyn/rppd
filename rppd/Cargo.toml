@@ -1,7 +1,7 @@
 
 [package]
 name = "rppd"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - Rust Python Postgres"
@@ -47,6 +47,8 @@ cron-parser = "0.10.0"
 dns-lookup = "2.0.4"
 shims = {git = "https://github.com/vkrinitsyn/shim.git"}
 rppd-common = {path = "../rppd-common"}
+opentelemetry_sdk = { version = "^0.29", features = ["rt-tokio", "tracing"], optional = true }
+opentelemetry = { version = "^0.29", optional = true }
 
 
 [features]
@@ -64,6 +66,7 @@ etcd-external = ["dep:etcd-client"]
 
 # The RPPD use as a library with config table extranally provided
 lib-embedded = []
+tracer = ["dep:opentelemetry_sdk", "dep:opentelemetry"]
 
 
 [profile.dev]

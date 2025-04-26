@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+#[cfg(feature = "tracer")] use opentelemetry_sdk::trace::SdkTracer;
+#[cfg(feature = "tracer")] use opentelemetry::trace::{Tracer, Span};
 use slog::{crit, debug, error, info, trace, warn, Logger};
 use sqlx::{Pool, Postgres};
 use sqlx::postgres::PgPoolOptions;
@@ -164,6 +166,7 @@ pub struct RppdNodeCluster {
     pub(crate) cron: Arc<RwLock<CronContext>>,
     pub(crate) etcd: Arc<RwLock<EtcdConnector>>,
     pub(crate) log: Logger,
+    #[cfg(feature = "tracer")] pub(crate) tracer: Option<SdkTracer>,
 }
 #[cfg(feature = "etcd-external")]
 pub(crate) type WatcherW = etcd_client::Watcher;
@@ -311,9 +314,11 @@ impl RppdNodeCluster {
 
 
     /// init
-    pub async fn init(c: RppdConfig,
-                      #[cfg(feature = "etcd-provided")] etcd: etcd::cluster::EtcdNode,
-                      log: Logger
+    pub async fn init(
+        c: RppdConfig,
+        #[cfg(feature = "etcd-provided")] etcd: etcd::cluster::EtcdNode,
+        log: Logger,
+        #[cfg(feature = "tracer")] tracer: Option<SdkTracer>,
     ) -> Result<Self, String> {
         let pool = PgPoolOptions::new()
             .max_connections(1)  // use only on init
@@ -391,6 +396,7 @@ impl RppdNodeCluster {
             kv_sender,
             watchers: Arc::new(Default::default()),
             log,
+            #[cfg(feature = "tracer")] tracer
         };
 
         cluster.run(rsvr, kv_rsvr, !found_self, !master && !found_self_master).await;
@@ -695,6 +701,9 @@ impl RppdNodeCluster {
                 #[cfg(not(feature = "etcd-external"))]
                 let etcd = self.etcd.clone();
                 let log = self.log.clone();
+                let name = fc.schema_table.clone();
+                #[cfg(feature = "tracer")]
+                let s = self.tracer.as_ref().map(|t| t.start(name));
                 tokio::spawn(async move {
                     let r = p.lock().await.invoke(&f, &fc);
 
@@ -716,6 +725,7 @@ impl RppdNodeCluster {
                         queue.send(Some(RpFnLog { took_ms: Some(sec), ..f })).await {
                         warn!(log, "{}", e);
                     }
+                    #[cfg(feature = "tracer")] let _ = s.map(|mut s| s.end());
                 });
             }
         }

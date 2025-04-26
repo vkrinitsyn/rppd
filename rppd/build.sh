@@ -10,3 +10,6 @@ cargo build --features etcd-provided --no-default-features --lib
 echo
 echo etcd-external
 cargo build --features etcd-external --no-default-features
+echo tracer
+cargo build --features etcd-provided,tracer --no-default-features --lib
+cargo build --features tracer
