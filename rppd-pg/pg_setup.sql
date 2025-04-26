@@ -8,8 +8,8 @@ CREATE table if not exists @extschema@.rppd_config (
     active_since timestamptz default current_timestamp,
     max_db_connections int not null default 10,
     master bool unique
-
 );
+
 comment on table @extschema@.rppd_config is 'App nodes host binding, master host flag. If added by someone, will notify all others';
 comment on column @extschema@.rppd_config.active_since is 'The NULL or future value indicate incative nodes';
 comment on column @extschema@.rppd_config.host_name is 'The readable name for a node host instance. use --name= to set on server start';
@@ -19,6 +19,7 @@ comment on column @extschema@.rppd_config.max_db_connections is 'Max connections
 
 CREATE TRIGGER @extschema@_rppd_config_event AFTER INSERT OR UPDATE OR DELETE ON
     @extschema@.rppd_config FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
+
 
 
 CREATE table if not exists @extschema@.rppd_function (

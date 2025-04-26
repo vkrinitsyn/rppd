@@ -1,0 +1,239 @@
+# /*%LPH%*/
+
+  database:
+  - schema:
+    schemaName: @extschema@
+    tables:
+      - table:
+          tableName: rppd_function
+          description: >
+            Python function code, linked table and topic.
+            If modify, than the cache will be refreshed.
+            Functions triggered for same topic OR table i.e. many fn per event will order by id.
+          columns:
+            - column:
+                name: id
+                type: serial
+                constraint:
+                  primaryKey: true
+            - column:
+                name: code
+                type: text
+                constraint:
+                  nullable: false
+            - column:
+                name: checksum
+                type: varchar(64)
+                constraint:
+                  nullable: false
+            - column:
+                name: schema_table
+                type: varchar(64)
+                description: >
+                  The rppd_event() must trigger on the corresponding "schema_table" to fire the function,
+                  see topic to identify execution order.
+                  if start with "/" then will create a watcher to etcd server.
+                  The /q/ or /queue/ required for messaging queue if use a rust etcd impl
+                constraint:
+                  nullable: false
+            - column:
+                name: topic
+                type: varchar(64)
+                defaultValue: ''
+                description: |
+                  "": queue/topic per table (see schema_table);
+                  ".{column}": queue per value of the column "id" in this table, the value type must be int;
+                  "{any_name}": global queue i.e. multiple tables can share the same queue/topic
+                constraint:
+                  nullable: false
+            - column:
+                name: priority
+                type: int
+                defaultValue: '1'
+                constraint:
+                  nullable: false
+            - column:
+                name: queue
+                type: bool
+                description: >
+                  if queue, then perform consequence events execution for the same topic.
+                  If set true then etcd message will delete automatically.
+                  Ex: if the "topic" is ".id" and not queue, then events for same row will execute in parallel
+                defaultValue: 'true'
+                constraint:
+                  nullable: false
+            - column:
+                name: cleanup_logs_min
+                type: int
+                description: >
+                  Cleanup rppd_function_log after certain minutes. Will execute only if fn_logging
+                defaultValue: '0'
+                constraint:
+                  nullable: false
+            - column:
+                name: fn_logging
+                type: bool
+                description: >
+                  Store logs to rppd_function_log on every function call.
+                  Otherwise no DB call for a function execution,
+                  But DB still available to perform SQL call from Python.
+                defaultValue: 'false'
+                constraint:
+                  nullable: false
+            - column:
+                name: verbose_debug
+                type: bool
+                description: 'Provide extra log message and errors'
+                defaultValue: 'false'
+                constraint:
+                  nullable: false
+
+#  env json, -- reserved for future usage: db pool (read only)/config python param name prefix (mapping)
+#  sign json -- reserved for future usage: approve sign );
+          triggers:
+            - trigger:
+                name: _rppd_function_event
+                event: AFTER INSERT OR UPDATE OR DELETE
+                when: for each row
+                proc: rppd_event()
+
+#  select nextval('rppd_function_log_id_seq'::regclass); -- start log id from above 0, see ".id > 0"
+
+
+      - table:
+          tableName: rppd_function_log
+          description: 'Python function code execution results for a tracking consistency, durability and cadence'
+          columns:
+            - column:
+                name: id
+                type: bigserial
+                constraint:
+                  primaryKey: true
+            - column:
+                name: node_id
+                type: int
+                description: 'The rppd_config.id as a reference to execution node'
+                constraint:
+                  nullable: false
+            - column:
+                name: fn_id
+                type: int
+                description: The rppd_function.id, but no FK to keep performance
+                constraint:
+                  nullable: false
+            - column:
+                name: trig_value
+                type: json
+                description: >
+                  The value of column to trigger if topic is ".{column}".
+                  Use stored value to load on restore queue on startup and continue.
+                  Must be column type int to continue otherwise will save null and not able to restore.
+            - column:
+                name: trig_type
+                type: int
+                defaultValue: '0'
+                description: 'Type of event: Update = 0, Insert = 1, Delete = 2, Truncate = 3'
+                constraint:
+                  nullable: false
+            - column:
+                name: started_at
+                type: timestamptz
+                defaultValue: current_timestamp
+                constraint:
+                  nullable: false
+            - column:
+                name: took_ms
+                type: bigint
+                description: 'The rppd_function running time in milliseconds or NULL if it is not finished'
+            - column:
+                name: error_msg
+                type: text
+                description: 'The error messages includes function init on connect'
+
+
+      - table:
+          tableName: rppd_cron
+          description: 'Periodic function python trigger schedule and cadence'
+          columns:
+            - column:
+                name: id
+                type: serial
+                constraint:
+                  primaryKey: true
+            - column:
+                name: fn_id
+                type: int
+                description: >
+                  The table reference to the function configuration.
+                  The topic in this function must be a column to increment on periodic event fire
+                constraint:
+                  nullable: false
+            - column:
+                name: cron
+                type: varchar(64)
+                description: 'The schedule see https://en.wikipedia.org/wiki/Cron , Please adjust timeout accordingly.'
+                constraint:
+                  nullable: false
+            - column:
+                name: column_name
+                type: varchar(64)
+                description: 'The column in target table to update'
+                constraint:
+                  nullable: false
+            - column:
+                name: column_value
+                type: text
+                description: 'The column SQL value in target table to update'
+            - column:
+                name: cadence
+                type: bool
+                default: 'false'
+                description: >
+                  The flag indicate to run this cron job only if the function was not started by cron defined.
+                  Required a rppd_function_log i.e. cleanup_logs_min > 0
+                constraint:
+                  nullable: false
+            - column:
+                name: timeout_sec
+                type: int
+                description: >
+                  The if the finished_at is not null but started_at.
+                  If started_at is null, the function never started yet
+                constraint:
+                  nullable: false
+            - column:
+                name: finished_at
+                type: timestamptz
+                description: >
+                  The function wont start if finished_at is null, except timeout.
+                  If started_at is null, the function never started yet
+                constraint:
+                  nullable: false
+            - column:
+                name: started_at
+                type: timestamptz
+                description: ''
+                constraint:
+                  nullable: false
+            - column:
+                name: error_msg
+                type: text
+                description: ''
+                constraint:
+                  nullable: false
+
+          triggers:
+            - trigger:
+                name: _rppd_cron_event
+                event: AFTER INSERT OR UPDATE OR DELETE
+                when: for each row
+                proc: rppd_event()
+
+
+#  CREATE TRIGGER @extschema@_rppd_cron_event_up AFTER UPDATE OF id, fn_id, cron, column_name, column_value, cadence, timeout_sec
+#  ON @extschema@.rppd_cron FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
+#
+#  comment on function @extschema@.rppd_info(node_id integer) is 'Return node status in json format by node_id from rppd_config.id table';
+#  comment on function @extschema@.rppd_info(cfg text) is 'Use the config table name: The name includes schema, i.e.: schema.table. Default is "public.rppd_config". if ".<table>" than default use schema is "public". if "<schema>." than default use table is "rppd_config"';
+#  comment on function @extschema@.rppd_info(node_id integer, fn_log_id bigint) is 'Same as node status plus function execution status by fn_log.id table';
+#  comment on function @extschema@.rppd_info(node_id integer, fn_log_uuid text) is 'Same as node status plus function execution status by uuid if not store to fn_log.id table. use * to get all uuid.';

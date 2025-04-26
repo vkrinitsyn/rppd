@@ -1,7 +1,7 @@
 
 [package]
 name = "rppd"
-version = "0.2.1"
+version = "0.2.3"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - Rust Python Postgres"
@@ -34,7 +34,6 @@ thiserror = "*"
 pyo3 = { version = "^0.24", features = ["auto-initialize", "uuid"] }
 
 etcd = {git = "https://github.com/vkrinitsyn/etcd.git"}
-#etcd = {path = "../../etcd"}
 etcd-client = { version = "0.14.1", optional = true}
 
 sqlx = { version = "0.8.3", features = ["postgres", "runtime-tokio", "chrono"] }
@@ -48,6 +47,8 @@ cron-parser = "0.10.0"
 dns-lookup = "2.0.4"
 shims = {git = "https://github.com/vkrinitsyn/shim.git"}
 rppd-common = {path = "../rppd-common"}
+opentelemetry_sdk = { version = "^0.29", features = ["rt-tokio", "tracing"], optional = true }
+opentelemetry = { version = "^0.29", optional = true }
 
 
 [features]
@@ -62,6 +63,10 @@ etcd-provided = []
 # use external etcd server, like valilla implementation. Require etcd client configuration (not fully implemented in RPPD)
 # queue messaging wont work in this case, only subscription to key change i.e. topic
 etcd-external = ["dep:etcd-client"]
+
+# The RPPD use as a library with config table extranally provided
+lib-embedded = []
+tracer = ["dep:opentelemetry_sdk", "dep:opentelemetry"]
 
 
 [profile.dev]

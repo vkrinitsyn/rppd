@@ -28,8 +28,11 @@ use rppde::rd_config::RppdNodeCluster;
 
 #[cfg(feature = "etcd-provided")]
 compile_error!("only etcd-embeded or etcd-external feature can be enabled at this main compile; to build lib only use: '--features etcd-provided --no-default-features --lib'");
+// #[cfg(any(feature = "lib-embedded", feature = "tracer"))]
+// compile_error!("main is not compatible with selected features");
 
 /// db connection is required
+#[cfg(not(feature = "lib-embedded"))]
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() -> Result<(), String> {
     let log = logger(true);
@@ -42,7 +45,10 @@ async fn main() -> Result<(), String> {
     match RppdConfig::new(input) {
         Ok(c) => {
             let log = logger(c.verbose);
-            let srv = RppdNodeCluster::init(c, log.clone()).await?;
+            let srv = RppdNodeCluster::init(
+                c, log.clone(),
+                #[cfg(feature = "tracer")] None,
+            ).await?;
             let _ = srv.serve().await?;
             let sht = wait_for_signal().await;
             srv.unmaster().await

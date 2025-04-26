@@ -1,4 +1,5 @@
 /*%LPH%*/
+#![allow(unused_imports)]
 
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -8,6 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+#[cfg(feature = "tracer")] use opentelemetry_sdk::trace::SdkTracer;
+#[cfg(feature = "tracer")] use opentelemetry::trace::{Tracer, Span};
 use slog::{crit, debug, error, info, trace, warn, Logger};
 use sqlx::{Pool, Postgres};
 use sqlx::postgres::PgPoolOptions;
@@ -30,17 +33,25 @@ use crate::rd_monitor::ClusterStat;
 use crate::rd_queue::QueueType;
 use crate::rd_rpc::ScheduleResult;
 
-pub(crate) const SELECT: &str = "select id, host, host_name, active_since, master, max_db_connections from %SCHEMA%.rppd_config where ";
-pub(crate) const SELECT_MASTER: &str = "select id from %SCHEMA%.rppd_config where master";
 
-const INSERT_HOST: &str = "insert into %SCHEMA%.rppd_config (host, host_name, master) values ($1, $2, $3) returning id";
+// use only on start_monitoring on standalon mode
+#[cfg(not(feature = "lib-embedded"))]
+pub(crate) const SELECT_MASTER: &str = "select id from %SCHEMA%.%TABLE% where master";
+// use only on standalon mode
+#[cfg(not(feature = "lib-embedded"))]
+const INSERT_HOST: &str = "insert into %SCHEMA%.%TABLE% (host, host_name, master) values ($1, $2, $3) returning id";
+// use only on standalon mode
+#[cfg(not(feature = "lib-embedded"))]
+pub(crate) const UP_MASTER: &str = "update %SCHEMA%.%TABLE% set master = true where id = $1";
+// use only on standalon mode
 
-pub(crate) const UP_MASTER: &str = "update %SCHEMA%.rppd_config set master = true where id = $1";
-pub(crate) const DWN_MASTER: &str = "update %SCHEMA%.rppd_config set master = NULL where master and id = $1";
+#[cfg(not(feature = "lib-embedded"))]
+pub(crate) const DWN_MASTER: &str = "update %SCHEMA%.%TABLE% set master = NULL where master and id = $1";
 
 /// connection timeout. also sleep timeout on monitoring
 pub(crate) const TIMEOUT_MS: u64 = 1000;
 /// max errors including timeout, each attemnt after sleep of timeout, before
+#[cfg(not(feature = "lib-embedded"))]
 pub(crate) const MAX_ERRORS: u8 = 2;
 
 
@@ -57,8 +68,11 @@ pub struct RpHost {
 }
 
 impl RpHost {
-    pub(crate) fn select(schema: &String, condition: &str) -> String {
-        format!("{} {}", SELECT.replace("%SCHEMA%", schema.as_str()), condition)
+
+    /// use on init and reload hosts
+    fn select_active(cfg: &RppdConfig) -> String {
+        format!("select id, host, host_name, active_since, master, max_db_connections \
+            from {}.{} where active_since is not null", cfg.schema, cfg.table)
     }
 
     pub(crate) async fn connect(&self) -> Result<Mutex<RppdNodeClient<Channel>>, String> {
@@ -121,6 +135,7 @@ pub struct RppdNodeCluster {
 
     /// connections to nodes, mostly use by master
     /// host to node_id
+    #[allow(unused)]
     pub(crate) node_ids: Arc<RwLock<HashMap<HostType, i32>>>,
 
     /// common queue to trigger bg dispatcher
@@ -151,6 +166,7 @@ pub struct RppdNodeCluster {
     pub(crate) cron: Arc<RwLock<CronContext>>,
     pub(crate) etcd: Arc<RwLock<EtcdConnector>>,
     pub(crate) log: Logger,
+    #[cfg(feature = "tracer")] pub(crate) tracer: Option<SdkTracer>,
 }
 #[cfg(feature = "etcd-external")]
 pub(crate) type WatcherW = etcd_client::Watcher;
@@ -179,7 +195,7 @@ impl RppdNodeCluster {
 
     #[inline]
     pub(crate) async fn reload_hosts(&self, x: &DbEventRequest) -> Result<(), String> {
-        let sql = RpHost::select(&self.cfg.schema, "active_since is not null");
+        let sql = RpHost::select_active(&self.cfg); // reload_hosts
         let sql = if x.pks.len() == 0 { sql } else { format!("{} and {}", sql, make_sql_cnd(&x.pks)) };
         let mut r = sqlx::query_as::<_, RpHost>(sql.as_str());
         // PK ID set for Hosts is redundant, because config table has only one int PK, but use of common struct dictate to perform this way
@@ -298,9 +314,11 @@ impl RppdNodeCluster {
 
 
     /// init
-    pub async fn init(c: RppdConfig,
-                      #[cfg(feature = "etcd-provided")] etcd: etcd::cluster::EtcdNode,
-                      log: Logger
+    pub async fn init(
+        c: RppdConfig,
+        #[cfg(feature = "etcd-provided")] etcd: etcd::cluster::EtcdNode,
+        log: Logger,
+        #[cfg(feature = "tracer")] tracer: Option<SdkTracer>,
     ) -> Result<Self, String> {
         let pool = PgPoolOptions::new()
             .max_connections(1)  // use only on init
@@ -310,7 +328,7 @@ impl RppdNodeCluster {
         let mut nodes = BTreeMap::new();
         let mut node_connections = BTreeMap::new();
         let mut node_id = HashMap::new();
-        let sql = RpHost::select(&c.schema, "active_since is not null");
+        let sql = RpHost::select_active(&c); // init
         let r = sqlx::query_as::<_, RpHost>(sql.as_str())
             .fetch_all(&pool).await
             .map_err(|e| format!("Loading cluster of active nodes [{}]: {}", sql, e))?;
@@ -378,6 +396,7 @@ impl RppdNodeCluster {
             kv_sender,
             watchers: Arc::new(Default::default()),
             log,
+            #[cfg(feature = "tracer")] tracer
         };
 
         cluster.run(rsvr, kv_rsvr, !found_self, !master && !found_self_master).await;
@@ -523,44 +542,53 @@ impl RppdNodeCluster {
 
 
     /// try to self register as master if needed, return node_id
+    #[allow(unused)]
     async fn start_bg(&self, insert: bool, master: bool) -> Result<(), String> {
         let pool = self.db();
         let host = format!("{}:{}", self.cfg.bind, self.cfg.port);
-        if insert {
-            info!(self.log, "Self registering: {} by name: {} {}", host, self.cfg.name, if master { "as master" } else { "" });
-            let sql = INSERT_HOST.replace("%SCHEMA%", &self.cfg.schema.as_str());
-            let id = sqlx::query_scalar::<_, i32>(sql.as_str())
-                .bind(&host)
-                .bind(&self.cfg.name)
-                .bind(if master { Some(true) } else { None })
-                .fetch_one(&self.db()).await
-                .map_err(|e| format!("self reg failed {}", e))?;
+        #[cfg(not(feature = "lib-embedded"))]
+        {
+            if insert {
+                info!(self.log, "Self registering: {} by name: {} {}", host, self.cfg.name, if master { "as master" } else { "" });
+                let sql = INSERT_HOST
+                    .replace("%SCHEMA%", &self.cfg.schema.as_str())
+                    .replace("%TABLE%", &self.cfg.table.as_str());
+                let id = sqlx::query_scalar::<_, i32>(sql.as_str())
+                    .bind(&host)
+                    .bind(&self.cfg.name)
+                    .bind(if master { Some(true) } else { None })
+                    .fetch_one(&self.db()).await
+                    .map_err(|e| format!("self reg failed {}", e))?;
 
-            self.node_id.store(id, Ordering::Relaxed);
-            info!(self.log, "Registered: {}", host);
-        }
-        let id = self.node_id.load(Ordering::Relaxed);
+                self.node_id.store(id, Ordering::Relaxed);
+                info!(self.log, "Registered: {}", host);
+            }
+            let id = self.node_id.load(Ordering::Relaxed);
 
-        if !insert && master {
-            info!(self.log, "Self mark as master: {} by name: {} ", host, self.cfg.name);
-            let sql = UP_MASTER.replace("%SCHEMA%", &self.cfg.schema.as_str());
-            if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
-                error!(self.log, "{}", e);
+            if !insert && master {
+                info!(self.log, "Self mark as master: {} by name: {} ", host, self.cfg.name);
+                let sql = UP_MASTER
+                    .replace("%SCHEMA%", &self.cfg.schema.as_str())
+                    .replace("%TABLE%", &self.cfg.table.as_str());
+                if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
+                    error!(self.log, "{}", e);
+                }
+            }
+
+            let sql = "select master from %SCHEMA%.%TABLE% where id = $1"
+                .replace("%SCHEMA%", &self.cfg.schema.as_str())
+                .replace("%TABLE%", &self.cfg.table.as_str())
+                ;
+
+            let master = sqlx::query_scalar::<_, bool>(sql.as_str())
+                .bind(id)
+                .fetch_one(&pool).await
+                .map_err(|e| e.to_string())?;
+            if master {
+                self.master.store(true, Ordering::Relaxed);
+                self.master_id.store(id, Ordering::Relaxed);
             }
         }
-
-        let sql = "select master from %SCHEMA%.rppd_config where id = $1".replace("%SCHEMA%", &self.cfg.schema.as_str());
-
-        let master = sqlx::query_scalar::<_, bool>(sql.as_str())
-            .bind(id)
-            .fetch_one(&pool).await
-            .map_err(|e| e.to_string())?;
-        if master {
-            self.master.store(true, Ordering::Relaxed);
-            self.master_id.store(id, Ordering::Relaxed);
-        }
-
-        // let _sql = RpHost::select(&self.cfg.schema, "id = $1");
 
         debug!(self.log, "loading functions");
         let _ = self.reload_fs(&None).await?;
@@ -673,6 +701,9 @@ impl RppdNodeCluster {
                 #[cfg(not(feature = "etcd-external"))]
                 let etcd = self.etcd.clone();
                 let log = self.log.clone();
+                let name = fc.schema_table.clone();
+                #[cfg(feature = "tracer")]
+                let s = self.tracer.as_ref().map(|t| t.start(name));
                 tokio::spawn(async move {
                     let r = p.lock().await.invoke(&f, &fc);
 
@@ -694,6 +725,7 @@ impl RppdNodeCluster {
                         queue.send(Some(RpFnLog { took_ms: Some(sec), ..f })).await {
                         warn!(log, "{}", e);
                     }
+                    #[cfg(feature = "tracer")] let _ = s.map(|mut s| s.end());
                 });
             }
         }

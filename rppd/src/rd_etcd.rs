@@ -120,6 +120,8 @@ impl EtcdConnector {
         EtcdConnector {
             etcd,
             client_id: cfg.node.clone(),
+            host: cfg.bind.clone(),
+            port: cfg.port.to_string(),
             log: log.clone(),
         }
     }
@@ -297,6 +299,7 @@ impl RpFn {
     }
 
     #[cfg(not(feature = "etcd-external"))]
+    #[allow(dead_code)]
     pub(crate) fn is_etcd_queue(&self) -> bool {
         self.schema_table.starts_with("/q/")
         || self.schema_table.starts_with("/queue/")

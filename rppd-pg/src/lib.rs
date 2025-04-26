@@ -14,7 +14,7 @@ use pgrx::spi::SpiError;
 use pgrx::WhoAllocated;
 use tokio::runtime::{Builder, Runtime};
 use tonic::transport::{Channel, Endpoint};
-
+use rppd_common::CFG_TABLE;
 use rppd_common::protogen::rppc::{DbAction, DbEventRequest, DbEventResponse, PkColumn, PkColumnType, StatusRequest};
 use rppd_common::protogen::rppc::pk_column::PkValue::{BigintValue, IntValue};
 use rppd_common::protogen::rppc::status_request::FnLog;
@@ -23,7 +23,6 @@ use rppd_common::protogen::rppg::rppd_trigger_client::RppdTriggerClient;
 
 pgrx::pg_module_magic!();
 
-pub const CONFIG_TABLE: &str = "rppd_config";
 pub const TIMEOUT_MS: u64 = 100;
 
 
@@ -95,11 +94,11 @@ fn connect(host: &String) -> Result<RppdTriggerClient<Channel>, String> {
 
 fn sql(config_schema_table: &String) -> String {
     let st = if config_schema_table.len() == 0 {
-        format!("public.{}", CONFIG_TABLE)
+        format!("public.{}", CFG_TABLE)
     } else if config_schema_table.starts_with(".") {
         format!("public{}", config_schema_table)
     } else if config_schema_table.ends_with(".") {
-        format!("{}{}", config_schema_table, CONFIG_TABLE)
+        format!("{}{}", config_schema_table, CFG_TABLE)
     } else {
         config_schema_table.into()
     };
@@ -124,7 +123,7 @@ fn rppd_event<'a>(
 
     let table_name = trigger.table_name().unwrap_or("".into());
     let not_loaded = !CONFIG.loaded.load(Ordering::Relaxed);
-    let cfg_table = table_name.as_str() == CONFIG_TABLE
+    let cfg_table = table_name.as_str() == CFG_TABLE
         && current.get_by_name::<bool>("master")
         .map_err(|_e| PgTriggerError::NullTriggerData)?.unwrap_or(false);
     if not_loaded || cfg_table {
