@@ -146,7 +146,7 @@ pub struct RppdNodeCluster {
 
     #[allow(dead_code)]
     /// common queue to trigger bg dispatcher
-    pub(crate) reconfiguration: Sender<ConfigurationRequest>,
+    pub reconfiguration: Sender<ConfigurationRequest>,
 
     /// queue(tablename) -> watcher_id
     pub(crate) watchers: Arc<RwLock<HashMap<SchemaTableType, WatcherW>>>,
