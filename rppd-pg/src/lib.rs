@@ -116,6 +116,10 @@ fn rppd_event<'a>(
             trigger.new().ok_or(PgTriggerError::NotTrigger)?//.into_owned()
         };
 
+    if crate::is_endless_loop() {
+        return Ok(Some(current));
+    }
+
     let mut pks = vec![];
     if let Ok(v) = current.get_by_name::<i32>("id") {
         pks.push(PkColumn { column_name: "id".to_string(), column_type: 0, pk_value: v.map(|v| IntValue(v)) });
@@ -235,6 +239,12 @@ fn call(event: DbEventRequest) -> Result<DbEventResponse, String> {
             }
         }
     })
+}
+
+
+/// this stab for future use and to prevent cyclyc references on cluster environment
+fn is_endless_loop() -> bool {
+    false
 }
 
 

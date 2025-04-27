@@ -68,7 +68,7 @@ impl RppdNodeCluster {
     /// create Python runtime and DB connection
     #[inline]
     pub(crate) async fn new_py_context(&self, f: &RpFn) -> Result<PyContext, PyErr> {
-        let db_url = self.cfg.db_url();
+        let db_url = self.cfg.read().await.db_url();
         let module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
             Ok(PyModule::import(py, POSTGRES_PY)?.into())
         })?;

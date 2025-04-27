@@ -125,7 +125,7 @@ impl RppdNodeCluster {
     pub(crate) async fn cronjob(&self) {
         if let Ok(mut cron) = self.cron.try_write() {
             let db = self.db();
-            let schema = self.cfg.schema.clone();
+            let schema = self.cfg.read().await.schema.clone();
             let mut jobs = Vec::with_capacity(cron.jobs.len());
             let now = Utc::now();
             for (dt, id) in &cron.jobs {
@@ -158,7 +158,7 @@ impl RppdNodeCluster {
     /// cron load on start OR reload on event
     pub(crate) async fn reload_cron(&self, request: &Option<DbEventRequest>) -> Result<(), String>  {
         let mut cron = self.cron.write().await;
-        cron.reload(&self.cfg.schema, self.db()).await
+        cron.reload(self.cfg.read().await.schema.clone(), self.db()).await
     }
 }
 
@@ -175,7 +175,7 @@ impl CronContext {
     /// background reloading cron jobs.
     /// cleanup
      #[inline]
-   pub(crate) async fn reload(&mut self, schema: &String, db: Pool<Postgres>) -> Result<(), String> {
+   pub(crate) async fn reload(&mut self, schema: String, db: Pool<Postgres>) -> Result<(), String> {
         let cl = sqlx::query_as::<_, RpFnCron>(SELECT_CRON.replace("%SCHEMA%", schema.as_str()).as_str())
             .fetch_all(&db).await.map_err(|e| e.to_string())?;
 

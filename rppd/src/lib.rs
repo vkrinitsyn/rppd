@@ -67,7 +67,11 @@ impl RppdNodeCluster {
         #[cfg(feature = "etcd-embeded")]
         let srv = self.etcd.read().await.add_all_services(srv);
 
-        let addrsv:Vec<&str> = self.cfg.bind.split(",").collect();
+        let (name, bind, port) = { let cfg = self.cfg.read().await;
+            (cfg.name.clone(), cfg.bind.clone(), cfg.port)
+        };
+
+        let addrsv:Vec<&str> = bind.split(",").collect();
         let adr: Vec<&str> = if addrsv[0].starts_with("http") {
             let url: Vec<&str> = addrsv[0].split("//").collect();
             url[1].split(":").collect()
@@ -77,18 +81,18 @@ impl RppdNodeCluster {
         
         let bind = adr[0];
         let adr = if bind.chars().next().unwrap_or(' ').is_numeric() {
-            addrsv[0].parse::<SocketAddr>().map_err(|e| format!("parsing {}: {}", self.cfg.bind, e))?
+            addrsv[0].parse::<SocketAddr>().map_err(|e| format!("parsing {}: {}", bind, e))?
         } else {
             let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(format!("Binding to {}", bind).as_str());
             if ips.len() == 0 {
                 error!(self.log, "No IpAddr found {}", bind);
                 std::process::exit(9);
             }
-            SocketAddr::new(ips[0], self.cfg.port)
+            SocketAddr::new(ips[0], port)
         };
 
-        #[cfg(feature = "etcd-embeded")] info!(self.log, "Starting RPPD&ETCD server [{}] at: {}", self.cfg.name, self.cfg.bind);
-        #[cfg(not(feature = "etcd-embeded"))] info!(self.log, "Starting RPPD server [{}] at: {}", self.cfg.name, self.cfg.bind);
+        #[cfg(feature = "etcd-embeded")] info!(self.log, "Starting RPPD&ETCD server [{}] at: {}", name, bind);
+        #[cfg(not(feature = "etcd-embeded"))] info!(self.log, "Starting RPPD server [{}] at: {}", name, bind);
         let log = self.log.clone();
         tokio::spawn(async move {
             match srv.serve(adr) // .serve_with_incoming_shutdown(uds_stream, rx.map(drop) )

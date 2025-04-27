@@ -26,7 +26,8 @@ use etcd::queue::QueueNameKey;
 
 #[cfg(feature = "etcd-embeded")] use tonic::transport::server::Router;
 #[cfg(feature = "etcd-embeded")] use etcd::cli::EtcdConfig;
-
+#[allow(unused_imports)] #[cfg(feature = "tracer")] use opentelemetry::trace::*;
+#[allow(unused_imports)] #[cfg(feature = "tracer")] use opentelemetry_sdk::trace::*;
 use crate::arg_config::RppdConfig;
 use crate::rd_config::RppdNodeCluster;
 use crate::rd_fn::RpFn;
@@ -77,14 +78,18 @@ impl EtcdConnector {
     }
 
     #[cfg(feature = "etcd-embeded")]
-    pub(crate) async fn init(cfg: &RppdConfig, log: &Logger) -> Self {
+    pub(crate) async fn init(cfg: &RppdConfig, log: &Logger,
+         #[cfg(feature = "tracer")] tracer: Option<SdkTracer>,
+    ) -> Self {
         let etcd = EtcdNode::init(EtcdConfig {
             node: cfg.node.to_string(),
             cluster: cfg.cluster.to_string(),
             name: cfg.name.clone(),
             listen_client_urls: format!("{}:{}", cfg.bind, cfg.port),
             ..Default::default()
-        }, log.clone()).await;
+        }, log.clone(),
+          #[cfg(feature = "tracer")] tracer
+        ).await;
 
         EtcdConnector {
             etcd,
