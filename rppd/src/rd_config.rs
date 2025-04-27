@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-#[cfg(feature = "tracer")] use opentelemetry_sdk::trace::SdkTracer;
-#[cfg(feature = "tracer")] use opentelemetry::trace::{Tracer, Span};
+#[allow(unused_imports)] #[cfg(feature = "tracer")] use opentelemetry_sdk::trace::SdkTracer;
+#[allow(unused_imports)] #[cfg(feature = "tracer")] use opentelemetry::trace::{Tracer, Span};
 use slog::{crit, debug, error, info, trace, warn, Logger};
 use sqlx::{Pool, Postgres};
 use sqlx::postgres::PgPoolOptions;
@@ -108,7 +108,7 @@ pub(crate) type HostType = String;
 #[derive(Clone)]
 pub struct RppdNodeCluster {
     /// parsed configs
-    pub(crate) cfg: RppdConfig,
+    pub(crate) cfg: Arc<RwLock<RppdConfig>>,
     /// is the instance play master, receive trigger calls, schedule and call others
     pub(crate) master: Arc<AtomicBool>,
     /// is the node loaded all logs
@@ -144,6 +144,10 @@ pub struct RppdNodeCluster {
     /// common queue to trigger bg dispatcher
     pub(crate) kv_sender: Sender<MessageRequest>,
 
+    #[allow(dead_code)]
+    /// common queue to trigger bg dispatcher
+    pub(crate) reconfiguration: Sender<ConfigurationRequest>,
+
     /// queue(tablename) -> watcher_id
     pub(crate) watchers: Arc<RwLock<HashMap<SchemaTableType, WatcherW>>>,
 
@@ -166,7 +170,7 @@ pub struct RppdNodeCluster {
     pub(crate) cron: Arc<RwLock<CronContext>>,
     pub(crate) etcd: Arc<RwLock<EtcdConnector>>,
     pub(crate) log: Logger,
-    #[cfg(feature = "tracer")] pub(crate) tracer: Option<SdkTracer>,
+    #[cfg(feature = "tracer")] pub(crate) tracer: Arc<RwLock<Option<SdkTracer>>>,
 }
 #[cfg(feature = "etcd-external")]
 pub(crate) type WatcherW = etcd_client::Watcher;
@@ -186,16 +190,37 @@ fn make_sql_cnd(input: &Vec<PkColumn>) -> String {
     }
     sql
 }
+pub enum ConfigurationRequest {
+    #[cfg(feature = "tracer")] Tracer(Option<SdkTracer>),
+    Config(RppdConfig),
+}
 
 impl RppdNodeCluster {
     pub(crate) fn db(&self) -> Pool<Postgres> {
         self.db.clone()
     }
 
+    async fn re_confgiure(&self, x: ConfigurationRequest) -> Result<(), String> {
+        match x{
+            #[cfg(feature = "tracer")]
+            ConfigurationRequest::Tracer(t) => {
+                *self.tracer.write().await = t;
+            }
+            ConfigurationRequest::Config(cfg) => {
+                *self.cfg.write().await = cfg;
+            }
+        }
+        Ok(())
+    }
+
 
     #[inline]
     pub(crate) async fn reload_hosts(&self, x: &DbEventRequest) -> Result<(), String> {
-        let sql = RpHost::select_active(&self.cfg); // reload_hosts
+        let (host, sql) = {
+            let cfg = self.cfg.read().await;
+            (format!("{}:{}", cfg.bind, cfg.port), RpHost::select_active(&cfg))
+        };
+
         let sql = if x.pks.len() == 0 { sql } else { format!("{} and {}", sql, make_sql_cnd(&x.pks)) };
         let mut r = sqlx::query_as::<_, RpHost>(sql.as_str());
         // PK ID set for Hosts is redundant, because config table has only one int PK, but use of common struct dictate to perform this way
@@ -212,7 +237,7 @@ impl RppdNodeCluster {
         let rs = r.fetch_all(&self.db()).await
             .map_err(|e| e.to_string())?;
         let mut loaded = BTreeSet::new();
-        let host = format!("{}:{}", self.cfg.bind, self.cfg.port);
+
         for n in rs {
             loaded.insert(n.id);
             if n.host == host { // this host
@@ -250,7 +275,7 @@ impl RppdNodeCluster {
     /// load all or reload one or remove one function, include load/remove fs_logs
     #[inline]
     pub(crate) async fn reload_fs(&self, x: &Option<DbEventRequest>) -> Result<(), String> {
-        let sql = SELECT_FN.replace("%SCHEMA%", self.cfg.schema.as_str());
+        let sql = SELECT_FN.replace("%SCHEMA%", self.cfg.read().await.schema.as_str());
         let sql = if x.is_none() || x.as_ref().unwrap().pks.len() == 0 { sql } else {
             format!("{} where {}", sql, make_sql_cnd(&x.as_ref().unwrap().pks))
         };
@@ -357,10 +382,11 @@ impl RppdNodeCluster {
         }
 
         let (sender, rsvr) = mpsc::channel(c.max_queue_size);
+        let (cfg_sender, cfg_rsvr) = mpsc::channel(c.max_queue_size);
         let (kv_sender, kv_rsvr) = mpsc::channel(c.max_queue_size);
 
         #[cfg(feature = "etcd-embeded")]
-        let etcd = EtcdConnector::init(&c, &log).await;
+        let etcd = EtcdConnector::init(&c, &log, #[cfg(feature = "tracer")] tracer.clone()).await;
         #[cfg(feature = "etcd-provided")]
         let etcd = EtcdConnector::new(etcd, &c, &log).await;
         #[cfg(feature = "etcd-external")]
@@ -368,7 +394,7 @@ impl RppdNodeCluster {
 
 
         let cluster = RppdNodeCluster {
-            cfg: c,
+            cfg: Arc::new(RwLock::new(c)),
             master: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
             node_id: Arc::new(AtomicI32::new(id)),
@@ -382,6 +408,7 @@ impl RppdNodeCluster {
             node_connections: Arc::new(RwLock::new(node_connections)),
             node_ids: Arc::new(RwLock::new(node_id)),
             sender,
+            reconfiguration: cfg_sender,
             queue: Arc::new(Default::default()),
             fns: Arc::new(Default::default()),
             fn_tt: Arc::new(Default::default()),
@@ -396,16 +423,21 @@ impl RppdNodeCluster {
             kv_sender,
             watchers: Arc::new(Default::default()),
             log,
-            #[cfg(feature = "tracer")] tracer
+            #[cfg(feature = "tracer")] tracer: Arc::new(RwLock::new(tracer)),
         };
 
-        cluster.run(rsvr, kv_rsvr, !found_self, !master && !found_self_master).await;
+        cluster.run(rsvr, cfg_rsvr, kv_rsvr, !found_self, !master && !found_self_master).await;
         info!(cluster.log, "Cluster instance created");
         Ok(cluster)
     }
 
     /// prepare to run code on startup and background
-    async fn run(&self, mut rsvr: Receiver<Option<RpFnLog>>, mut kv_rsvr: Receiver<MessageRequest>, self_register: bool, self_master: bool) {
+    async fn run(&self,
+                 mut rsvr: Receiver<Option<RpFnLog>>,
+                 mut cfg_rsvr: Receiver<ConfigurationRequest>,
+                 mut kv_rsvr: Receiver<MessageRequest>,
+                 self_register: bool,
+                 self_master: bool) {
         let ctx = self.clone();
         let ctxm = self.clone();
 
@@ -423,6 +455,14 @@ impl RppdNodeCluster {
             });
             while let Some(ci) = rsvr.recv().await {
                 ctx.execute(ci).await
+            }
+        });
+        let cfg_ctx = self.clone();
+        tokio::spawn(async move {
+            while let Some(m) = cfg_rsvr.recv().await {
+                if let Err(e) = cfg_ctx.re_confgiure(m).await {
+                    error!(cfg_ctx.log, "{}", e);
+                }
             }
         });
         let ctx = self.clone();
@@ -511,20 +551,20 @@ impl RppdNodeCluster {
             trace!(self.log, "prepared to repeat {:?}", non_pk_column);
             return Ok(ScheduleResult::Repeat(non_pk_column));
         }
-
+        let schema = &self.cfg.read().await.schema.clone();
         let mut res = Vec::with_capacity(fn_logs.len());
         for fl in fn_logs {
             if let Some(ref rn) = fl.rn_fn_id {
                 if rn.save {
                     let r = if rn.trig_value {
-                        sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&self.cfg.schema).as_str())
+                        sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&schema).as_str())
                             .bind(fl.node_id)
                             .bind(fl.fn_id)
                             .bind(fl.trig_type)
                             .bind(fl.trig_value.clone())
                             .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
                     } else {
-                        sqlx::query_scalar::<_, i64>(RpFnLog::insert(&self.cfg.schema).as_str())
+                        sqlx::query_scalar::<_, i64>(RpFnLog::insert(&schema).as_str())
                             .bind(fl.node_id)
                             .bind(fl.fn_id)
                             .bind(fl.trig_type)
@@ -545,17 +585,20 @@ impl RppdNodeCluster {
     #[allow(unused)]
     async fn start_bg(&self, insert: bool, master: bool) -> Result<(), String> {
         let pool = self.db();
-        let host = format!("{}:{}", self.cfg.bind, self.cfg.port);
+        let (schema, table, name, host) = { let cfg = self.cfg.read().await;
+            (cfg.schema.clone(), cfg.table.clone(), cfg.name.clone(), format!("{}:{}", cfg.bind, cfg.port))
+        };
+
         #[cfg(not(feature = "lib-embedded"))]
         {
             if insert {
-                info!(self.log, "Self registering: {} by name: {} {}", host, self.cfg.name, if master { "as master" } else { "" });
+                info!(self.log, "Self registering: {} by name: {} {}", host, name, if master { "as master" } else { "" });
                 let sql = INSERT_HOST
-                    .replace("%SCHEMA%", &self.cfg.schema.as_str())
-                    .replace("%TABLE%", &self.cfg.table.as_str());
+                    .replace("%SCHEMA%", schema.as_str())
+                    .replace("%TABLE%", table.as_str());
                 let id = sqlx::query_scalar::<_, i32>(sql.as_str())
                     .bind(&host)
-                    .bind(&self.cfg.name)
+                    .bind(&name)
                     .bind(if master { Some(true) } else { None })
                     .fetch_one(&self.db()).await
                     .map_err(|e| format!("self reg failed {}", e))?;
@@ -566,18 +609,18 @@ impl RppdNodeCluster {
             let id = self.node_id.load(Ordering::Relaxed);
 
             if !insert && master {
-                info!(self.log, "Self mark as master: {} by name: {} ", host, self.cfg.name);
+                info!(self.log, "Self mark as master: {} by name: {} ", host, name);
                 let sql = UP_MASTER
-                    .replace("%SCHEMA%", &self.cfg.schema.as_str())
-                    .replace("%TABLE%", &self.cfg.table.as_str());
+                    .replace("%SCHEMA%", schema.as_str())
+                    .replace("%TABLE%", table.as_str());
                 if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
                     error!(self.log, "{}", e);
                 }
             }
 
             let sql = "select master from %SCHEMA%.%TABLE% where id = $1"
-                .replace("%SCHEMA%", &self.cfg.schema.as_str())
-                .replace("%TABLE%", &self.cfg.table.as_str())
+                .replace("%SCHEMA%", schema.as_str())
+                .replace("%TABLE%", table.as_str())
                 ;
 
             let master = sqlx::query_scalar::<_, bool>(sql.as_str())
@@ -595,7 +638,7 @@ impl RppdNodeCluster {
 
         // load messages to internal queue from fn_log, check timeout and execution status,
         for l in sqlx::query_as::<_, RpFnLog>(
-            format!("{} where took_ms is null order by id", RpFnLog::select(&self.cfg.schema)).as_str())
+            format!("{} where took_ms is null order by id", RpFnLog::select(&schema)).as_str())
             .fetch_all(&self.db()).await.map_err(|e| e.to_string())? {
             self.queueing(l, false).await; // append loaded on startup
         }
@@ -614,6 +657,9 @@ impl RppdNodeCluster {
     #[inline]
     async fn execute(&self, f: Option<RpFnLog>) {
         trace!(self.log, "invoke {:?}", f);
+        let (schema, db_url) = { let cfg = self.cfg.read().await;
+            (cfg.schema.clone(), cfg.db_url.clone())
+        };
         let f = match f {
             None => match self.queue.write().await.pick_one() {
                 None => { // nothing to execute from topics or not ready as a queue
@@ -641,7 +687,7 @@ impl RppdNodeCluster {
                     if let Ok(master) = node {
                         // notify master about completion of function execution and trigger to pick a next event in a queue
                         let _ = master.lock().await.complete(StatusRequest {
-                            config_schema_table: self.cfg.schema.clone(),
+                            config_schema_table: schema.clone(),
                             node_id: self.node_id.load(Ordering::Relaxed),
                             fn_log: Some(
                                 if f.id > 0 {
@@ -677,10 +723,10 @@ impl RppdNodeCluster {
                 let p = match c {
                     None => {
                         let p = match self.new_py_context(&fc).await
-                            .map_err(|e| format!("connecting python to {}: {}", self.cfg.db_url, e)) {
+                            .map_err(|e| format!("connecting python to {}: {}", &db_url, e)) {
                             Ok(p) => p,
                             Err(e) => {
-                                f.update_err(e, self.db(), &self.cfg.schema, &self.log).await;
+                                f.update_err(e, self.db(), &schema, &self.log).await;
                                 return;
                             }
                         };
@@ -694,16 +740,16 @@ impl RppdNodeCluster {
                 // thread this >
                 let exec = self.exec.clone();
                 let db = self.db();
-                let schema = self.cfg.schema.clone();
+                let schema = self.cfg.read().await.schema.clone();
                 let queue = self.sender.clone();
                 let fc = fc.clone();
                 let run = self.running.clone();
                 #[cfg(not(feature = "etcd-external"))]
                 let etcd = self.etcd.clone();
                 let log = self.log.clone();
-                let name = fc.schema_table.clone();
+                let _name = fc.schema_table.clone();
                 #[cfg(feature = "tracer")]
-                let s = self.tracer.as_ref().map(|t| t.start(name));
+                let mut s = self.tracer.read().await.as_ref().map(|t| t.start(_name));
                 tokio::spawn(async move {
                     let r = p.lock().await.invoke(&f, &fc);
 
@@ -714,10 +760,18 @@ impl RppdNodeCluster {
 
                     match &r {
                         Ok(_) => debug!(log, "executed OK! {} {}", fc.schema_table, fc.topic),
-                        Err(e) => error!(log, "executed notOK#{} {} {}", fc.schema_table, fc.topic, e),
+                        Err(e) => {
+                            #[cfg(feature = "tracer")] {
+                                let event = e.clone();
+                                let _ = s.as_mut()
+                                    .map(|s| s.add_event(event, vec![]));
+                            }
+                            error!(log, "executed notOK#{} {} {}", fc.schema_table, fc.topic, e)
+                        },
                     }
                     
                     let sec = started.elapsed().as_millis() as i64;
+                    #[cfg(feature = "tracer")] let _ = s.as_mut().map(|s| s.add_event("log", vec![]));
                     f.update(sec, r.err(), db, &schema, &log).await;
                     exec.write().await.push_front(p);
                     run.fetch_sub(1, Ordering::Relaxed);
@@ -725,7 +779,6 @@ impl RppdNodeCluster {
                         queue.send(Some(RpFnLog { took_ms: Some(sec), ..f })).await {
                         warn!(log, "{}", e);
                     }
-                    #[cfg(feature = "tracer")] let _ = s.map(|mut s| s.end());
                 });
             }
         }

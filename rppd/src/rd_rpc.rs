@@ -97,6 +97,7 @@ impl RppdTrigger for RppdNodeCluster {
 impl RppdNodeCluster {
 
     async fn event_impl(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
+        let schema = self.cfg.read().await.schema.clone();
         let request = request.into_inner();
         if request.optional_caller.is_some() && self.master.load(Ordering::Relaxed) {
             return Ok(Response::new(DbEventResponse { saved: false, repeat_with: vec![] })); // no reverse call from host to master
@@ -104,7 +105,7 @@ impl RppdNodeCluster {
 
         if !self.started.load(Ordering::Relaxed) {
             // not started
-            return if request.table_name.starts_with(&self.cfg.schema) && request.table_name.ends_with(CFG_TABLE) {
+            return if request.table_name.starts_with(&schema) && request.table_name.ends_with(CFG_TABLE) {
                 Ok(Response::new(DbEventResponse { saved: true, repeat_with: vec![] })) // init stage to set master
             } else {
                 if request.optional_caller.is_some() {
@@ -129,7 +130,7 @@ impl RppdNodeCluster {
                 }
             }
 
-            if request.table_name.starts_with(&self.cfg.schema) {
+            if request.table_name.starts_with(&schema) {
                 if request.optional_caller.is_none() {
                     // TODO broadcast to cluster, set optional_caller to this as master
                     
