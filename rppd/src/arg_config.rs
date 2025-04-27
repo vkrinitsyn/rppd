@@ -53,7 +53,7 @@ pub fn usage() -> String {
 ///  - use PGPASSWORD env variable (or from file) to postgres connection
 ///  - use PGUSER env variable (or read from file) to postgres connection
 ///  - priority is: env, if no set, than param, than file, than default
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RppdConfig {
     /// The node uuid
     pub node: Uuid,
