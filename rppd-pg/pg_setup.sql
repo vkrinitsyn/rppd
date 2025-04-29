@@ -60,6 +60,7 @@ CREATE table if not exists @extschema@.rppd_function_log (
     trig_type int not null default 0,
     started_at timestamptz not null default current_timestamp,
     took_ms bigint,
+    output text,
     error_msg text
 );
 
@@ -69,6 +70,7 @@ comment on column @extschema@.rppd_function_log.fn_id is 'The rppd_function.id, 
 comment on column @extschema@.rppd_function_log.trig_value is 'The value of column to trigger if topic is ".{column}". Use stored value to load on restore queue on startup and continue. Must be column type int to continue otherwise will save null and not able to restore.';
 comment on column @extschema@.rppd_function_log.trig_type is 'Type of event: Update = 0, Insert = 1, Delete = 2, Truncate = 3';
 comment on column @extschema@.rppd_function_log.took_ms is 'The rppd_function running time in milliseconds or NULL if it is not finished';
+comment on column @extschema@.rppd_function_log.output is 'The sysout grabbed from function';
 comment on column @extschema@.rppd_function_log.error_msg is 'The error messages includes function init on connect';
 
 

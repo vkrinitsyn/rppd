@@ -16,6 +16,7 @@ use uuid::Uuid;
 use rppd_common::protogen::rppc::{db_event_request, pk_column, DbEventRequest, PkColumn};
 use crate::py::PyCall;
 use crate::rd_config::{RppdNodeCluster, TopicType};
+use crate::LP;
 
 pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, fn_logging, verbose_debug from %SCHEMA%.rppd_function ";
 
@@ -152,6 +153,7 @@ pub struct RpFnLog {
     pub(crate) trig_type: i32,
     pub(crate) started_at: chrono::DateTime<Utc>,
     pub(crate) error_msg: Option<String>,
+    pub(crate) output: Option<String>,
 }
 
 impl Default for RpFnLog {
@@ -170,6 +172,7 @@ impl Default for RpFnLog {
             rn_fn_id: None,
             trig_type: 0,
             started_at: Utc::now(),
+            output: None,
             error_msg: None,
         }
     }
@@ -352,13 +355,14 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) async fn update(&self, took: i64, r: Option<String>, db: Pool<Postgres>, schema: &String, log: &Logger) {
+    pub(crate) async fn update(&self, took: i64, r: Result<String, String>, db: Pool<Postgres>, schema: &String, log: &Logger) {
         if self.id == 0 { return; }
-        let sql = "update %SCHEMA%.rppd_function_log set took_ms = $1, error_msg = $2 where id = $3";
+        let sql = "update %SCHEMA%.rppd_function_log set took_ms = $1, output = $2, error_msg = $3 where id = $4";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(took)
-            .bind(r)
+            .bind(r.as_ref().ok())
+            .bind(r.as_ref().err())
             .bind(self.id)
             .execute(&db).await {
             error!(log, "{}", e);
@@ -367,7 +371,7 @@ impl RpFnLog {
 
     #[inline]
     pub(crate) async fn update_err(&self, r: String, db: Pool<Postgres>, schema: &String, log: &Logger) {
-        error!(log, "update_err {}", r);
+        error!(log, "{}update_err {}", LP, r);
 
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set error_msg = $1 where id = $2";
@@ -376,7 +380,7 @@ impl RpFnLog {
             .bind(Some(r))
             .bind(self.id)
             .execute(&db).await {
-            error!(log, "{}", e);
+            error!(log, "{}{}", LP, e);
         }
     }
 

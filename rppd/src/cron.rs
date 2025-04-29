@@ -6,6 +6,7 @@ use slog::{error, Logger};
 use sqlx::{Pool, Postgres};
 use rppd_common::protogen::rppc::DbEventRequest;
 use crate::rd_config::RppdNodeCluster;
+use crate::LP;
 
 pub(crate) const SELECT_CRON: &str = "select id, fn_id, cron, column_name, column_value, cadence, timeout_sec, started_at, finished_at, error_msg from %SCHEMA%.rppd_cron";
 pub type CronDTType = DateTime<Utc>;
@@ -38,7 +39,7 @@ impl RpFnCron {
             .bind(self.id)
             .bind(Some(msg))
             .execute(db).await {
-            error!(log, "{}", e);
+            error!(log, "{}{}", LP, e);
         }
 
         Ok(())
@@ -50,7 +51,7 @@ impl RpFnCron {
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(self.id)
             .execute(db).await {
-            error!(log, "{}", e);
+            error!(log, "{}{}", LP, e);
         }
 
         Ok(())
@@ -77,7 +78,7 @@ impl RpFnCron {
         if let Err(e) = sqlx::query(sql.as_str())
             .bind(self.id)
             .execute(db).await {
-            error!(log, "starting cron job with SQL: {} raise error: {}", sql, e);
+            error!(log, "{}starting cron job with SQL: {} raise error: {}", LP, sql, e);
             return None;
         }
 
@@ -111,7 +112,7 @@ impl RpFnCron {
             }
         }
         {
-            error!(log, "finishing cron job SQL: {}, raise error{}", esql, e);
+            error!(log, "{}finishing cron job SQL: {}, raise error{}", LP, esql, e);
         }
         self.finished_at = Some(Utc::now());
         Some(self.cron.clone())
