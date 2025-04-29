@@ -33,7 +33,13 @@ mod rd_etcd;
 #[folder = "i18n/"]
 struct Localizations;
 
-// type Queue = Sender<String>;
+/// Logging prefix, to start every loggin message with a string to use in a server as a module
+#[cfg(feature = "lib-embedded")]
+const LP: &'static str = "[py] ";
+
+/// Logging prefix stub
+#[cfg(not(feature = "lib-embedded"))]
+const LP: &'static str = "";
 
 lazy_static! {
     pub static ref LANGUAGE_LOADER: FluentLanguageLoader = {
@@ -85,7 +91,7 @@ impl RppdNodeCluster {
         } else {
             let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(format!("Binding to {}", bind).as_str());
             if ips.len() == 0 {
-                error!(self.log, "No IpAddr found {}", bind);
+                error!(self.log, "{}No IpAddr found {}", LP, bind);
                 std::process::exit(9);
             }
             SocketAddr::new(ips[0], port)
@@ -98,7 +104,7 @@ impl RppdNodeCluster {
             match srv.serve(adr) // .serve_with_incoming_shutdown(uds_stream, rx.map(drop) )
                 .await {
                 Ok(()) => {
-                    info!(log, "bye");
+                    info!(log, "{}bye", LP);
                 }
                 Err(e) => {
                     error!(log, "{} {}", fl!("error"), e);

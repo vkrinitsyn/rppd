@@ -15,6 +15,7 @@ use rppd_common::protogen::rppg::rppd_trigger_server::RppdTrigger;
 use crate::arg_config::{CFG_CRON_TABLE, CFG_FN_TABLE};
 use crate::rd_config::RppdNodeCluster;
 use crate::rd_fn::RpFnLog;
+use crate::LP;
 
 pub(crate) enum ScheduleResult {
     // fn not found, no need schedule 
@@ -47,7 +48,7 @@ impl RppdNode for RppdNodeCluster {
                 }
             }
         } else {
-            debug!(self.log, "no consumer for {}", &request.key);
+            debug!(self.log, "{}no consumer for {}", LP, &request.key);
         }
 
         Ok(Response::new(MessageResponse { }))
@@ -125,7 +126,7 @@ impl RppdNodeCluster {
                     }
                 }
                 ScheduleResult::Repeat(repeat_with) => {
-                    info!(self.log, "re-requesting to repeat: {:?}", repeat_with);
+                    info!(self.log, "{}re-requesting to repeat: {:?}", LP, repeat_with);
                     return Ok(Response::new(DbEventResponse { saved: false, repeat_with }));
                 }
             }

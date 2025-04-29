@@ -31,6 +31,7 @@ use etcd::queue::QueueNameKey;
 use crate::arg_config::RppdConfig;
 use crate::rd_config::RppdNodeCluster;
 use crate::rd_fn::RpFn;
+use crate::LP;
 
 #[cfg(all(feature = "etcd-embeded", feature = "etcd-provided", feature = "etcd-external"))]
 compile_error!("only single etcd-embeded or etcd-provided or etcd-external feature can be enabled at the same time");
@@ -139,7 +140,7 @@ impl EtcdConnector {
             if let Err(e) = etcd.delete_range(Request::new(DeleteRangeRequest{
                 key: key.clone().into_bytes(), ..Default::default()
             })).await {
-                error!(self.log, "Cleanup queue: [{}] {}", key, e);
+                error!(self.log, "{}Cleanup queue: [{}] {}", LP, key, e);
             }
         }
     }
@@ -175,7 +176,7 @@ impl RpFn {
                     if let Some(mut w) = cluster.watchers.write().await
                         .remove(&self.schema_table) {
                         if let Err(e) = w.cancel().await {
-                            warn!(log, "can't clean watcher for {} Etcd reply: {}", &self.schema_table, e);
+                            warn!(log, "{}can't clean watcher for {} Etcd reply: {}", LP, &self.schema_table, e);
                         }
                     }
                 }
@@ -218,7 +219,7 @@ impl RpFn {
                                                     watch_id: watcher.watch_id,
                                                 }) { // just in case is something is there
                                                 if let Err(e) = w.cancel().await {
-                                                    warn!(log, "can't clean watcher for {} Etcd reply: {}", queue_name, e);
+                                                    warn!(log, "{}can't clean watcher for {} Etcd reply: {}", LP, queue_name, e);
                                                 }
                                             }
 
@@ -232,30 +233,30 @@ impl RpFn {
                                                                         key: String::from_utf8_lossy(&kv.key).to_string(),
                                                                         value: kv.value.to_vec(),
                                                                     }).await {
-                                                                        error!(log, "can't consume watcher notivy for {} Etcd watcher failed: {}", queue_name, e);
+                                                                        error!(log, "{}can't consume watcher notivy for {} Etcd watcher failed: {}", LP, queue_name, e);
                                                                     }
                                                                 }
                                                             }
                                                         }
                                                         Err(e) => {
-                                                            error!(log, "can't create watcher for {} Etcd watcher failed: {}", queue_name, e);
+                                                            error!(log, "{}can't create watcher for {} Etcd watcher failed: {}", LP, queue_name, e);
                                                         }
                                                     }
                                                 }
                                             });
                                         }
                                         Err(e) => {
-                                            warn!(log, "can't register watcher for {} Etcd reply: {}", queue_name, e);
+                                            warn!(log, "{}can't register watcher for {} Etcd reply: {}", LP, queue_name, e);
                                         }
                                     }
                                 }
                                 None => {
-                                    warn!(log, "can't register watcher for {} Etcd no reply", queue_name);
+                                    warn!(log, "{}can't register watcher for {} Etcd no reply", LP, queue_name);
                                 }
                             }
                         }
                         Err(e) => {
-                            error!(cluster.log, "can't create watcher for {} Etcd watcher failed: {}", queue_name, e);
+                            error!(cluster.log, "{}can't create watcher for {} Etcd watcher failed: {}", LP, queue_name, e);
                         }
                     }
                 }
@@ -267,7 +268,7 @@ impl RpFn {
                         if let Some(mut w) = cluster.watchers.write().await
                             .insert(queue_name.clone(), watcher) { // just in case is something there
                             if let Err(e) = w.cancel().await {
-                                warn!(log, "can't clean watcher for {} Etcd reply: {}", queue_name, e);
+                                warn!(log, "{}can't clean watcher for {} Etcd reply: {}", LP, queue_name, e);
                             }
                         }
                         tokio::spawn(async move {
@@ -280,25 +281,25 @@ impl RpFn {
                                                     key: kv.key_str().unwrap_or("").to_string(),
                                                     value: kv.value().to_vec(),
                                                 }).await {
-                                                    error!(log, "can't notify watcher for {} Etcd reply: {}", queue_name, e);
+                                                    error!(log, "{}can't notify watcher for {} Etcd reply: {}", LP, queue_name, e);
                                                 }
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        error!(log, "can't create watcher for {} Etcd reply: {}", queue_name, e);
+                                        error!(log, "{}can't create watcher for {} Etcd reply: {}", LP, queue_name, e);
                                     }
                                 }
                             }
                         });
                     },
                     Err(e) => {
-                        error!(log, "can't create watcher for {} Etcd watcher failed: {}", queue_name, e);
+                        error!(log, "{}can't create watcher for {} Etcd watcher failed: {}", LP, queue_name, e);
                     }
                 }
             }
             Err(e) => {
-                error!(cluster.log, "can't create watcher for [{}] Etcd is not ready: {}", queue_name, e);
+                error!(cluster.log, "{}can't create watcher for [{}] Etcd is not ready: {}", LP, queue_name, e);
             }
         }
     }

@@ -1,15 +1,18 @@
 #![allow(unused_variables, dead_code)]
 
+use std::ffi::CString;
 use std::mem::ManuallyDrop;
 use std::time::Instant;
 
 use pyo3::{IntoPyObject, Py, PyErr, PyObject, PyResult, Python};
+use pyo3::ffi::c_str;
 use pyo3::prelude::PyModule;
 use pyo3::types::{IntoPyDict, PyAnyMethods};
 use uuid::Uuid;
 
 use crate::rd_config::{RppdNodeCluster, TIMEOUT_MS};
 use crate::rd_fn::{RpFn, RpFnLog};
+use crate::LP;
 
 /// ManuallyDrop for PyModule and db: PyObject
 pub struct PyContext {
@@ -17,6 +20,7 @@ pub struct PyContext {
     py_db: ManuallyDrop<PyObject>,
     rt_etcd: ManuallyDrop<Py<PyModule>>,
     py_etcd: Result<ManuallyDrop<PyObject>, PyErr>,
+    // capture: Result<ManuallyDrop<Bound<PyModule>>, PyErr>,
     created: Instant,
     /// last tiem use
     ltu: Instant,
@@ -96,7 +100,7 @@ impl RppdNodeCluster {
         });
         
         if let Err(e) = &etcd_client {
-            slog::error!(self.log, "failed to connect to etcd v3 [{}:{}]: {}", host, port, e);
+            slog::error!(self.log, "{}failed to connect to etcd v3 [{}:{}]: {}", LP, host, port, e);
         }
 
         Ok(PyContext {
@@ -108,8 +112,19 @@ impl RppdNodeCluster {
             ltu: Instant::now(),
         })
     }
-}
 
+}
+const STDOUT_CAPTURE_CLASS: &str = r#"
+class StdoutCapture:
+    def __init__(self):
+        self.output = ""
+
+    def write(self, text):
+        self.output += text
+
+    def flush(self):
+        pass
+"#;
 
 impl PyContext {
     #[inline]
@@ -117,9 +132,8 @@ impl PyContext {
         self.ltu.elapsed().as_millis() < TIMEOUT_MS as u128
     }
 
-    
-    
-    pub(crate) fn invoke(&mut self, x: &RpFnLog, fc: &RpFn) -> Result<(), String> {
+
+    pub(crate) fn invoke(&mut self, x: &RpFnLog, fc: &RpFn) -> Result<String, String> {
         Python::with_gil(|py| {
             let locals = [
                 (DB, self.py_db.bind_borrowed(py)),
@@ -141,10 +155,36 @@ impl PyContext {
             if let Ok(e) = &self.py_etcd {
                 let _ = locals.set_item(ETCD, e.bind_borrowed(py))?;
             }
-            
+
+            let capture_instance = if fc.fn_logging {
+                let capture_instance =   PyModule::from_code(
+                    py,
+                    CString::new(STDOUT_CAPTURE_CLASS)?.as_c_str(),
+                    c_str!("capture.py"),
+                    c_str!("capture"),
+                )?.getattr("StdoutCapture")?.call0()?;
+
+                // Set sys.stdout to the capture instance
+                let sys = py.import("sys")?;
+                sys.setattr("stdout", &capture_instance)?;
+                Some(capture_instance)
+            } else {
+                None
+            };
+
             let res = py.run(fc.code()?.as_c_str(), None, Some(&locals));
             self.ltu = Instant::now();
-            res
+
+            let out = match capture_instance {
+                Some(ci) => match ci.getattr("output") {
+                    Ok(c) => c.extract::<String>()
+                        .unwrap_or_else(|out| format!("err: {}", out)),
+                    Err(e) => format!("err: {}", e)
+                }
+                None => "".to_string()
+            };
+
+            res.map(|_| out)
         }).map_err(|e| fc.err_msg(e, x))
     }
 }

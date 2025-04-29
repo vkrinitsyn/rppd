@@ -149,6 +149,10 @@
                 name: error_msg
                 type: text
                 description: 'The error messages includes function init on connect'
+            - column:
+                name: output
+                type: text
+                description: 'The stdout from python functions'
 
 
       - table:

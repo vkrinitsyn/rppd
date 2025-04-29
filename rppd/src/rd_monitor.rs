@@ -11,6 +11,7 @@ use rppd_common::protogen::rppc::{StatusRequest, StatusResponse};
 #[cfg(not(feature = "lib-embedded"))]
 use crate::rd_config::{DWN_MASTER, MAX_ERRORS, SELECT_MASTER, UP_MASTER};
 use crate::rd_config::{RppdNodeCluster, TIMEOUT_MS};
+use crate::LP;
 
 #[derive(Clone)]
 #[allow(unused_variables, dead_code)]
@@ -173,7 +174,7 @@ impl RppdNodeCluster {
     #[cfg(not(feature = "lib-embedded"))]
     pub(crate) async fn start_monitoring(&self) {
         let node_id = self.node_id.load(Ordering::Relaxed);
-        info!(self.log, "start_monitoring node {}", node_id);
+        info!(self.log, "{}start_monitoring node {}", LP, node_id);
         let (schema, table) = { let cfg = self.cfg.read().await;
             (cfg.schema.clone(), cfg.table.clone())
         };
@@ -246,20 +247,20 @@ impl RppdNodeCluster {
                                             let r = r.into_inner();
                                             if !r.is_master {  // discrepancy
                                                 errors += 1;
-                                                error!(self.log, "discrepancy on call master - replied: 'not a master'");
+                                                error!(self.log, "{}discrepancy on call master - replied: 'not a master'", LP);
                                             } else {
                                                 errors = 0;
                                             }
                                         }
                                         Err(e) => { // master having error
                                             errors += 1;
-                                            error!(self.log, "error on call master: {}", e);
+                                            error!(self.log, "{}error on call master: {}", LP, e);
                                         }
                                     }
                                 }
                                 Err(e) => { // master having error
                                     errors += 1;
-                                    error!(self.log, "no connection to master host: {}", e);
+                                    error!(self.log, "{}no connection to master host: {}", LP, e);
                                 }
                             }
                         }
@@ -267,7 +268,7 @@ impl RppdNodeCluster {
                 }
                 Err(e) => { // scenarios: DB not available, no one marked as master: either wait a second than act
                     errors += 1;
-                    error!(self.log, "can't load master from db {}", e);
+                    error!(self.log, "{}can't load master from db {}", LP, e);
                 }
             }
 
@@ -307,7 +308,7 @@ impl RppdNodeCluster {
 
         if let Some(master_id) = prev_db_master { // unregister previous master
             if let Ok(_ok) = sqlx::query(sql_dwn.as_str()).bind(master_id).execute(&self.db()).await {
-                info!(self.log, "removed previous load master from DB row ID = {}", master_id);
+                info!(self.log, "{}removed previous load master from DB row ID = {}", LP, master_id);
             }
         }
 
@@ -318,7 +319,7 @@ impl RppdNodeCluster {
                 self.master_id.store(node_id, Ordering::Relaxed);
             }
             Err(e) => {
-                error!(self.log, "marking self as master: {}", e);
+                error!(self.log, "{}marking self as master: {}", LP, e);
             }
         }
     }
@@ -328,7 +329,7 @@ impl RppdNodeCluster {
         let sql = crate::rd_fn::DELETE_LOG.replace("%SCHEMA%", self.cfg.read().await.schema.as_str());
 
         if let Err(e) = sqlx::query(sql.as_str()).execute(&self.db()).await {
-            error!(self.log, "Cleanup logs by [{}] {}", sql, e);
+            error!(self.log, "{}Cleanup logs by [{}] {}", LP, sql, e);
         }
 
     }
