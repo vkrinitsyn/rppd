@@ -149,6 +149,10 @@ pub struct RppdNodeCluster {
     /// common queue to trigger bg dispatcher
     pub reconfiguration: Sender<ConfigurationRequest>,
 
+    #[allow(dead_code)]
+    /// common queue to trigger bg dispatcher
+    pub event: Sender<DbEventRequest>,
+
     /// queue(tablename) -> watcher_id
     pub(crate) watchers: Arc<RwLock<HashMap<SchemaTableType, WatcherW>>>,
 
@@ -385,6 +389,7 @@ impl RppdNodeCluster {
         let (sender, rsvr) = mpsc::channel(c.max_queue_size);
         let (cfg_sender, cfg_rsvr) = mpsc::channel(c.max_queue_size);
         let (kv_sender, kv_rsvr) = mpsc::channel(c.max_queue_size);
+        let (event, event_rsvr) = mpsc::channel(c.max_queue_size);
 
         #[cfg(feature = "etcd-embeded")]
         let etcd = EtcdConnector::init(&c, &log, #[cfg(feature = "tracer")] tracer.clone()).await;
@@ -422,12 +427,14 @@ impl RppdNodeCluster {
             })),
             etcd: Arc::new(RwLock::new(etcd)),
             kv_sender,
+            event,
             watchers: Arc::new(Default::default()),
             log,
             #[cfg(feature = "tracer")] tracer: Arc::new(RwLock::new(tracer)),
         };
 
-        cluster.run(rsvr, cfg_rsvr, kv_rsvr, !found_self, !master && !found_self_master).await;
+        cluster.run(rsvr, cfg_rsvr, kv_rsvr, event_rsvr,
+                    !found_self, !master && !found_self_master).await;
         info!(cluster.log, "{}Cluster instance created", LP);
         Ok(cluster)
     }
@@ -437,6 +444,7 @@ impl RppdNodeCluster {
                  mut rsvr: Receiver<Option<RpFnLog>>,
                  mut cfg_rsvr: Receiver<ConfigurationRequest>,
                  mut kv_rsvr: Receiver<MessageRequest>,
+                 mut event_rsvr: Receiver<DbEventRequest>,
                  self_register: bool,
                  self_master: bool) {
         let ctx = self.clone();
@@ -471,6 +479,14 @@ impl RppdNodeCluster {
             while let Some(m) = kv_rsvr.recv().await {
                 if let Err(e) = ctx.message(Request::new(m)).await {
                     error!(ctx.log, "{}{}", LP, e);
+                }
+            }
+        });
+        let ectx = self.clone();
+        tokio::spawn(async move {
+            while let Some(m) = event_rsvr.recv().await {
+                if let Err(e) = ectx.event_impl(m).await {
+                    error!(ectx.log, "{}{}", LP, e);
                 }
             }
         });
