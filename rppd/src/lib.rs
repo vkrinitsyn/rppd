@@ -29,6 +29,9 @@ mod cron;
 mod rd_monitor;
 mod rd_etcd;
 
+// re export for use in lib integration
+pub use rppd_common::protogen::rppc::DbEventRequest;
+
 #[derive(RustEmbed)]
 #[folder = "i18n/"]
 struct Localizations;
