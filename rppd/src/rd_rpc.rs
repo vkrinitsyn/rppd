@@ -55,7 +55,7 @@ impl RppdNode for RppdNodeCluster {
     }
 
     async fn event(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
-        self.event_impl(request).await
+        self.event_impl(request.into_inner()).await
     }
 
     ///
@@ -88,7 +88,7 @@ impl RppdNode for RppdNodeCluster {
 #[async_trait]
 impl RppdTrigger for RppdNodeCluster {
     async fn event(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
-        self.event_impl(request).await
+        self.event_impl(request.into_inner()).await
     }
     async fn status(&self, request: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
         self.status_impl(request).await
@@ -97,9 +97,8 @@ impl RppdTrigger for RppdNodeCluster {
 
 impl RppdNodeCluster {
 
-    async fn event_impl(&self, request: Request<DbEventRequest>) -> Result<Response<DbEventResponse>, Status> {
+    pub(crate) async fn event_impl(&self, request: DbEventRequest) -> Result<Response<DbEventResponse>, Status> {
         let schema = self.cfg.read().await.schema.clone();
-        let request = request.into_inner();
         if request.optional_caller.is_some() && self.master.load(Ordering::Relaxed) {
             return Ok(Response::new(DbEventResponse { saved: false, repeat_with: vec![] })); // no reverse call from host to master
         }
