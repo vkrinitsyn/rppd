@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use pgrx::*;
+use pgrx::ffi::c_char;
 use pgrx::prelude::*;
 use pgrx::spi::SpiError;
 use pgrx::WhoAllocated;
@@ -25,6 +26,11 @@ pgrx::pg_module_magic!();
 
 pub const TIMEOUT_MS: u64 = 100;
 
+/// cluster node uuid
+pub const RPPD_NODE: &str = "rppd.node";
+
+/// if rppd.node=local, then not return connection error, AND ignore any execution, So return ok on trigger
+pub const RPPD_LOCAL: &str = "local";
 
 extension_sql_file!("../pg_setup.sql", requires = [rppd_event] );
 
@@ -115,6 +121,10 @@ fn rppd_event<'a>(
         } else {
             trigger.new().ok_or(PgTriggerError::NotTrigger)?//.into_owned()
         };
+    if get_var_as_string(RPPD_NODE)
+        .map(|v| v.unwrap_or("".into()).as_str() == RPPD_LOCAL).unwrap_or(false) {
+        return Ok(Some(current));
+    }
 
     if crate::is_endless_loop() {
         return Ok(Some(current));
@@ -359,6 +369,37 @@ fn wrap_to_json(input: String) -> String {
     format!("{{ \"error\":\"{}\" }}", input)
 }
 
+
+#[inline]
+pub fn get_var_as_string(name: &str) -> Result<Option<String>, String> {
+    let c_str = ffi::CString::new(name)
+        .map_err(|e| format!("Bad request GetConfigOptionByName({}) : {}", name, e))?;
+    let c_world: *const c_char = c_str.as_ptr() as *const c_char;
+    let ptr = unsafe {
+        pgrx_pg_sys::GetConfigOptionByName(
+            c_world,
+            std::ptr::null_mut(),
+            true,
+        )
+    };
+
+    if ptr.is_null() {
+        return match unsafe { pg_sys::SPI_result } {
+            pgrx_pg_sys::SPI_ERROR_NOATTRIBUTE | pgrx_pg_sys::SPI_ERROR_NOOUTFUNC => {
+                Err("NullDatumPointer".to_string())
+            }
+            _ => Ok(None),
+        };
+    }
+
+    // convert to String
+    let str = unsafe { core::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    unsafe {
+        pg_sys::pfree(ptr as *mut _);
+    }
+
+    Ok(Some(str))
+}
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_trigger]
