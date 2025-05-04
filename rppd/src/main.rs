@@ -5,6 +5,7 @@ extern crate core;
 extern crate slog;
 
 use std::net::SocketAddr;
+use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use bb8_postgres::tokio_postgres::GenericClient;
@@ -34,7 +35,7 @@ compile_error!("only etcd-embeded or etcd-external feature can be enabled at thi
 /// db connection is required
 #[cfg(not(feature = "lib-embedded"))]
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
-async fn main() -> Result<(), String> {
+async fn main() -> ExitCode {
     let log = logger(true);
 
     let app_name = fl!("rppd-name");
@@ -45,21 +46,35 @@ async fn main() -> Result<(), String> {
     match RppdConfig::new(input) {
         Ok(c) => {
             let log = logger(c.verbose);
-            let srv = RppdNodeCluster::init(
+            match RppdNodeCluster::init(
                 c, log.clone(),
                 #[cfg(feature = "tracer")] None,
-            ).await?;
-            let _ = srv.serve().await?;
-            let sht = wait_for_signal().await;
-            srv.unmaster().await
+            ).await {
+                Ok(srv) => {
+                    match srv.serve().await {
+                        Ok(_) => {
+                            let sht = wait_for_signal().await;
+                            srv.unmaster().await;
+                            ExitCode::from(0)
+                        }
+                        Err(e) => {
+                            error!(log, "{} {}", fl!("error"), e);
+                            ExitCode::from(11)
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(log, "{} {}", fl!("error"), e);
+                    ExitCode::from(12)
+                }
+            }
         }
         Err(e) => {
             error!(log, "{} {}", fl!("error"), e);
             info!(log, "{}", arg_config::usage());
-            std::process::exit(22);
+            ExitCode::from(22)
         }
     }
-    Ok(())
 }
 
 async fn wait_for_signal() -> Result<String, String> {

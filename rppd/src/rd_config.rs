@@ -452,12 +452,7 @@ impl RppdNodeCluster {
 
         tokio::spawn(async move { // will execute as background, but will try to connect to this host
             if let Err(e) = ctx.start_bg(self_register, self_master).await {
-                // TODO log
                 crit!(ctx.log, "Failed to start: {}", e);
-                eprint!("Failed to start: {}", e);
-                let _ = tokio::time::sleep(Duration::from_millis(100));
-                // drop(ctx); // will flush logger on drop
-                std::process::exit(12);
             }
             tokio::spawn(async move {
                 ctxm.start_monitoring().await;

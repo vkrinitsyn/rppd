@@ -9,7 +9,7 @@ use i18n_embed::{
 };
 use lazy_static::lazy_static;
 use rust_embed::RustEmbed;
-use slog::{error, info};
+use slog::{crit, info};
 use tonic::transport::Server;
 use tonic::transport::server::Router;
 use rppd_common::protogen::rppd::rppd_node_server::*;
@@ -94,8 +94,7 @@ impl RppdNodeCluster {
         } else {
             let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(format!("Binding to {}", bind).as_str());
             if ips.len() == 0 {
-                error!(self.log, "{}No IpAddr found {}", LP, bind);
-                std::process::exit(9);
+                return Err(format!("{}No IpAddr found {}", LP, bind));
             }
             SocketAddr::new(ips[0], port)
         };
@@ -110,8 +109,7 @@ impl RppdNodeCluster {
                     info!(log, "{}bye", LP);
                 }
                 Err(e) => {
-                    error!(log, "{} {}", fl!("error"), e);
-                    std::process::exit(10);
+                    crit!(log, "{} {}", fl!("error"), e);
                 }
             }
         });
