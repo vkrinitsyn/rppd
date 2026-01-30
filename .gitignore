@@ -2,3 +2,6 @@
 /target/
 .idea/
 *.local
+**/*.o
+**/*.bc
+**/*.so

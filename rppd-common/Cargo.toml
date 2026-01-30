@@ -6,12 +6,11 @@ edition = "2024"
 description = "RPPD - protibuf types and services"
 
 [dependencies]
-
 async-trait = "^0.1"
-tonic = { version = "^0.13", features = ["prost", "codegen"] }
-prost = { version = "^0.13", features = ["default"] }
+tonic = { version = "^0.13", default-features = false, features = ["prost", "codegen", "channel"] }
+prost = { version = "^0.13", default-features = false, features = ["derive"] }
 
-serde = { version = "^1.0", features = ["derive"] }
+serde = { version = "^1.0", default-features = false, features = ["derive", "alloc"] }
 
 [build-dependencies]
 tonic-build = { version = "^0.13", features = ["prost-build", "transport", "prost"]}
@@ -21,8 +20,9 @@ tonic-build = { version = "^0.13", features = ["prost-build", "transport", "pros
 panic = "unwind"
 
 [profile.release]
-panic = "unwind"
-
+panic = "abort"
 opt-level = "z"
-lto = "thin"
+lto = "fat"
 codegen-units = 1
+strip = "symbols"
+debug = false
