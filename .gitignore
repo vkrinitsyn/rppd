@@ -1,4 +1,8 @@
 */Cargo.lock
 /target/
+*/target/
 .idea/
 *.local
+**/*.o
+**/*.bc
+**/*.so

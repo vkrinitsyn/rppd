@@ -38,8 +38,15 @@ IF
 
 Then (this takes time)
 ```shell
-cargo install cargo-pgrx --force && cargo pgrx init 
+cargo install cargo-pgrx --force && cargo pgrx 
+# would require clang, gcc, libc6-dev, protobuf-compiler, libicu-dev, icu-devtools, libreadline-dev, build-essential, flex and bison installed
+# cargo install protobuf-codegen
+ 
 ```
+## C version of Postgres extension
+If you need C version of Postgres extension, please check
+[Readme C version](rppd-pg-c)
+
 
 ## Overall architecture
 

@@ -80,7 +80,11 @@ impl MetaConfig {
 }
 
 fn connect(host: &String) -> Result<RppdTriggerClient<Channel>, String> {
-    let path = format!("http://{}", host);
+    let path = if host.contains("://") {
+        host.clone()
+    } else {
+        format!("http://{}", host)
+    };
     // pgrx::warning!("connecting to: {}", path);
     match CONFIG.runtime.lock() {
         Ok(runtime) => {
