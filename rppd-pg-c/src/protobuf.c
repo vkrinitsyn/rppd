@@ -40,11 +40,12 @@ buf_ensure(EncodeBuffer *buf, size_t needed)
 {
     if (buf->size + needed > buf->capacity)
     {
+        uint8_t *new_data;
         size_t new_cap = buf->capacity * 2;
         if (new_cap < buf->size + needed)
             new_cap = buf->size + needed + 256;
 
-        uint8_t *new_data = realloc(buf->data, new_cap);
+        new_data = realloc(buf->data, new_cap);
         if (new_data == NULL)
             return -1;
 
@@ -77,7 +78,7 @@ buf_write_varint(EncodeBuffer *buf, uint64_t val)
     return 0;
 }
 
-static int
+static int __attribute__((unused))
 buf_write_svarint(EncodeBuffer *buf, int64_t val)
 {
     /* ZigZag encoding */
@@ -196,7 +197,7 @@ dec_read_varint(DecodeBuffer *buf, uint64_t *val)
     return 0;
 }
 
-static int
+static int __attribute__((unused))
 dec_read_svarint(DecodeBuffer *buf, int64_t *val)
 {
     uint64_t uval;
@@ -421,7 +422,7 @@ rppd_pb_encode_event_request(const DbEventRequest *req, uint8_t **out)
     /* field 5: pks (repeated) */
     for (i = 0; i < req->pks_count; i++)
     {
-        uint8_t *pk_data;
+        uint8_t *pk_data = NULL;
         size_t pk_len;
 
         pk_len = encode_pk_column(&req->pks[i], &pk_data);

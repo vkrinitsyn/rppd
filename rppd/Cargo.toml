@@ -38,11 +38,7 @@ etcd-client = { version = "^0.15", optional = true}
 
 sqlx = { version = "0.8.3", features = ["postgres", "runtime-tokio", "chrono"] }
 
-i18n-embed-fl = "^0.9"
-i18n-embed = { version = "^0.15", features = ["fluent-system", "desktop-requester"]}
-rust-embed = "^8.6"
-unic-langid = "0.9"
-lazy_static = "1.4.0"
+rust-i18n = "3"
 cron-parser = "0.10.0"
 dns-lookup = "2.0.4"
 shims = {git = "https://github.com/vkrinitsyn/shim.git"}

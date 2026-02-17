@@ -10,7 +10,7 @@ use std::path::Path;
 use std::str::FromStr;
 use uuid::Uuid;
 use rppd_common::CFG_TABLE;
-use crate::fl;
+use rust_i18n::t;
 
 /// DEFAULT_SCHEMA_TABLEe: ytcc::DEFAULT_SCHEMA . ytcc::DEFAULT_TABLE)
 // pub const DEFAULT_DB_URL: &str = "postgresql://postgres@postgres?host=/var/run/postgresql";
@@ -38,12 +38,12 @@ pub const DEFAULT_PORT: u16 = 8881;
 
 pub fn usage() -> String {
     format!("{}\n\n{}\n  {} {}.{}\n{}",
-            fl!("rppd-usage"),
-            fl!("rppd-default-args"),
+            t!("rppd-usage"),
+            t!("rppd-default-args"),
             DEFAULT_DB_URL,
             DEFAULT_SCHEMA,
             CFG_TABLE,
-            fl!("rppd-more-args"),
+            t!("rppd-more-args"),
     )
 }
 
@@ -131,7 +131,7 @@ impl RppdConfig {
     pub fn new(input: Vec<String>) -> Result<Self, String> {
         
         if input.len() > 6 {
-            return Err(fl!("err-too-many-args", count = (input.len()  - 1)));
+            return Err(t!("err-too-many-args", count = (input.len() - 1)).to_string());
         } else if input.len() == 1 { // default using env
             return Ok(RppdConfig::default());
         }
@@ -185,14 +185,14 @@ impl RppdConfig {
                         match b[1].parse::<u16>() {
                             Ok(v) => { port = v; }
                             Err(e) => {
-                                return Err(fl!("err-wrong-port-format", string = e.to_string(), value = v));
+                                return Err(t!("err-wrong-port-format", string = e.to_string(), value = v).to_string());
                             }
                         }
                     }
                 } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "", SCHEMA) {
                     let s: Vec<&str> = v.split(".").collect();
                     if s.len() > 2 {
-                        return Err(fl!("err-wrong-schema-format", string = v));
+                        return Err(t!("err-wrong-schema-format", string = v).to_string());
                     }
                     schema = s[0].to_string();
                 } else if input[i].starts_with("--node=") {

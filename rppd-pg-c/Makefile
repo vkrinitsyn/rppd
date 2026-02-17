@@ -1,13 +1,13 @@
 # rppd PostgreSQL Extension Makefile
 # Uses PGXS (PostgreSQL Extension Building Infrastructure)
 
+# Extension version from rppd-common
+RPPD_VERSION := $(shell grep '^version =' ../rppd-common/Cargo.toml | sed 's/version = "//;s/"//')
+
 EXTENSION = rppd
 MODULE_big = rppd
-DATA = rppd--0.2.2.sql
+DATA = rppd--$(RPPD_VERSION).sql
 OBJS = src/rppd.o src/grpc_client.o src/protobuf.o
-
-# Extension version
-RPPD_VERSION = 0.2.2
 
 # Get PostgreSQL major version
 PG_VERSION := $(shell pg_config --version | sed 's/PostgreSQL //' | cut -d. -f1)
@@ -16,11 +16,11 @@ PG_VERSION := $(shell pg_config --version | sed 's/PostgreSQL //' | cut -d. -f1)
 GLIBC_VERSION := $(shell ldd --version | head -n 1 | awk '{print $$NF}' | sed 's/\./_/g')
 
 # Versioned library name
-VERSIONED_SO = rppd-pg$(PG_VERSION)-glibc$(GLIBC_VERSION).so
+VERSIONED_SO = rppd$(RPPD_VERSION)-pg$(PG_VERSION)-glibc$(GLIBC_VERSION).so
 
 # Compiler flags
 PG_CPPFLAGS = -I$(shell pg_config --includedir) -I./src
-PG_CFLAGS = -Wall -Wextra -Werror=implicit-function-declaration
+PG_CFLAGS = -Wall -Wextra -Wno-unused-parameter -Werror=implicit-function-declaration
 
 # Required libraries: libcurl for HTTP/2, protobuf-c for protocol buffers
 SHLIB_LINK = -lcurl -lprotobuf-c
@@ -59,6 +59,9 @@ clean-proto:
 	rm -rf $(PROTO_OUT)
 
 .PHONY: proto clean-proto
+
+clean-all: clean
+	rm -f src/*.o src/*.bc rppd*.so
 
 info:
 	@echo "Extension: $(EXTENSION)"

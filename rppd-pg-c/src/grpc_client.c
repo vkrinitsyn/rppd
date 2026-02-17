@@ -39,11 +39,12 @@ write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 
     if (buf->size + realsize > buf->capacity)
     {
+        uint8_t *new_data;
         size_t new_capacity = buf->capacity * 2;
         if (new_capacity < buf->size + realsize)
             new_capacity = buf->size + realsize + 1024;
 
-        uint8_t *new_data = realloc(buf->data, new_capacity);
+        new_data = realloc(buf->data, new_capacity);
         if (new_data == NULL)
             return 0;
 
@@ -162,6 +163,7 @@ grpc_call(const char *method, const uint8_t *req_data, size_t req_len,
     uint8_t *frame;
     size_t frame_len;
     long http_code;
+    uint8_t *resp_copy;
 
     pthread_mutex_lock(&g_curl_mutex);
 
@@ -249,7 +251,7 @@ grpc_call(const char *method, const uint8_t *req_data, size_t req_len,
     }
 
     /* Caller needs to copy the data as we'll free the buffer */
-    uint8_t *resp_copy = malloc(*resp_len);
+    resp_copy = malloc(*resp_len);
     if (resp_copy == NULL)
     {
         snprintf(g_last_error, sizeof(g_last_error), "Memory allocation failed");
