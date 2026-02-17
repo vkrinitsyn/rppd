@@ -1,0 +1,5 @@
+comment = 'RPPD PostgreSQL Trigger Extension'
+default_version = '@RPPD_VERSION@'
+module_pathname = '$libdir/rppd'
+relocatable = false
+superuser = true

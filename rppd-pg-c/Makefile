@@ -3,6 +3,7 @@
 
 # Extension version from rppd-common
 RPPD_VERSION := $(shell grep '^version =' ../rppd-common/Cargo.toml | sed 's/version = "//;s/"//')
+RPPD_VERSION_SHORT := $(shell echo $(RPPD_VERSION) | cut -d. -f1,2)
 
 EXTENSION = rppd
 MODULE_big = rppd
@@ -44,9 +45,9 @@ $(PROTO_OUT)/rppg.pb-c.c: $(PROTO_DIR)/rppg.proto $(PROTO_DIR)/rppc.proto
 	@mkdir -p $(PROTO_OUT)
 	protoc-c --c_out=$(PROTO_OUT) --proto_path=$(PROTO_DIR) $<
 
-# Update control file version
+# Update control file version (major.minor only)
 $(EXTENSION).control: $(EXTENSION).control.in
-	sed 's/@RPPD_VERSION@/$(RPPD_VERSION)/g' $< > $@
+	sed 's/@RPPD_VERSION@/$(RPPD_VERSION_SHORT)/g' $< > $@
 
 # Post-build: create versioned copy
 all: $(VERSIONED_SO)
