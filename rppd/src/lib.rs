@@ -37,6 +37,13 @@ const LP: &'static str = "[py] ";
 #[cfg(not(feature = "lib-embedded"))]
 const LP: &'static str = "";
 
+
+const SG: &str = include!("../../rppd.yaml");
+
+pub fn get_schema_def(schema: &str) -> String {
+    SG.replace("@extschema@", schema)
+}
+
 impl RppdNodeCluster {
     /// called by main.rs
     pub async fn serve(&self) -> Result<(), String> {

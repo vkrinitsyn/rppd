@@ -3,7 +3,8 @@
 
 # Extension version from rppd-common
 RPPD_VERSION := $(shell grep '^version =' ../rppd-common/Cargo.toml | sed 's/version = "//;s/"//')
-RPPD_VERSION_SHORT := $(shell echo $(RPPD_VERSION) | cut -d. -f1,2)
+RPPD_VERSION_CTL := $(shell echo $(RPPD_VERSION) | cut -d. -f1,2 )
+RPPD_VERSION_SHORT := $(shell echo $(RPPD_VERSION_CTL) | sed 's/\./_/g')
 
 EXTENSION = rppd
 MODULE_big = rppd
@@ -17,7 +18,7 @@ PG_VERSION := $(shell pg_config --version | sed 's/PostgreSQL //' | cut -d. -f1)
 GLIBC_VERSION := $(shell ldd --version | head -n 1 | awk '{print $$NF}' | sed 's/\./_/g')
 
 # Versioned library name
-VERSIONED_SO = rppd$(RPPD_VERSION)-pg$(PG_VERSION)-glibc$(GLIBC_VERSION).so
+VERSIONED_SO = rppd$(RPPD_VERSION_SHORT)-pg$(PG_VERSION)-glibc$(GLIBC_VERSION).so
 
 # Compiler flags
 PG_CPPFLAGS = -I$(shell pg_config --includedir) -I./src
@@ -47,7 +48,7 @@ $(PROTO_OUT)/rppg.pb-c.c: $(PROTO_DIR)/rppg.proto $(PROTO_DIR)/rppc.proto
 
 # Update control file version (major.minor only)
 $(EXTENSION).control: $(EXTENSION).control.in
-	sed 's/@RPPD_VERSION@/$(RPPD_VERSION_SHORT)/g' $< > $@
+	sed 's/@RPPD_VERSION@/$(RPPD_VERSION_CTL)/g' $< > $@
 
 # Post-build: create versioned copy
 all: $(VERSIONED_SO)
