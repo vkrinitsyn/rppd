@@ -12,8 +12,6 @@
 
 
 ## Build
-> [!IMPORTANT]
-The target platform is Linux! The key component is pxrg, a rust postgres trigger engine that does not support windows.
 
 > [!NOTE]
 https://grpc.io/docs/protoc-installation/

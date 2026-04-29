@@ -40,6 +40,12 @@ const LP: &'static str = "";
 
 const SG: &str = include!("../../rppd.yaml");
 
+/// Schema Guard compatible schema definition, to be used in case of use as embedded library, to avoid the need of a separate rppd.yaml file.
+/// This is used to have a lib run without extantion install and trigger function configured.
+/// <li> @extschema@ will be replaced by the schema name to get config table deployed into</li>
+/// <li> Use: MigrationOptions.exclude_triggers to avoid trigegr creatino otherwithe use CREATE EXTENTION instead to create all tables as well </li>
+///
+/// use entered_schema.rppd_function to complete a RPPD instance configuration
 pub fn get_schema_def(schema: &str) -> String {
     SG.replace("@extschema@", schema)
 }
