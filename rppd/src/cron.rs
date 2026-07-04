@@ -35,7 +35,7 @@ impl RpFnCron {
     async fn update_err(&self, db: &Pool<Postgres>, msg: String, schema: &String, log: &Logger) -> Result<(), String> {
         let sql = "update %SCHEMA%.rppd_cron set error_msg = $2 where id = $1";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
-        if let Err(e) = sqlx::query(sql.as_str())
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(self.id)
             .bind(Some(msg))
             .execute(db).await {
@@ -48,7 +48,7 @@ impl RpFnCron {
     async fn update_no_err(&self, db: &Pool<Postgres>, schema: &String, log: &Logger) -> Result<(), String> {
         let sql = "update %SCHEMA%.rppd_cron set error_msg = NULL where id = $1";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
-        if let Err(e) = sqlx::query(sql.as_str())
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(self.id)
             .execute(db).await {
             error!(log, "{}{}", LP, e);
@@ -75,7 +75,7 @@ impl RpFnCron {
         self.finished_at = None;
         let sql = "update %SCHEMA%.rppd_cron set started_at = current_timestamp, finished_at = NULL where id = $1";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
-        if let Err(e) = sqlx::query(sql.as_str())
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(self.id)
             .execute(db).await {
             error!(log, "{}starting cron job with SQL: {} raise error: {}", LP, sql, e);
@@ -92,11 +92,11 @@ impl RpFnCron {
             match &self.column_value {
                 None => {
                     sql.push_str(" = NULL where id = $1");
-                    sqlx::query(sql.as_str()).bind(self.id).execute(db).await
+                    sqlx::query(sqlx::AssertSqlSafe(sql)).bind(self.id).execute(db).await
                 }
                 Some(v) => {
                     sql.push_str(" = $2 where id = $2");
-                    sqlx::query(sql.as_str())
+                    sqlx::query(sqlx::AssertSqlSafe(sql))
                         .bind(v)
                         .bind(self.id).execute(db).await
                 }
@@ -104,11 +104,11 @@ impl RpFnCron {
         } {
             Ok(_) => {
                 esql.push_str("NULL where id = $1");
-                sqlx::query(esql.as_str()).bind(self.id).execute(db).await
+                sqlx::query(sqlx::AssertSqlSafe(esql.as_str())).bind(self.id).execute(db).await
             }
             Err(e) => {
                 esql.push_str(" = $2 where id = $2");
-                sqlx::query(esql.as_str()).bind(Some(e.to_string())).bind(self.id).execute(db).await
+                sqlx::query(sqlx::AssertSqlSafe(esql.as_str())).bind(Some(e.to_string())).bind(self.id).execute(db).await
             }
         }
         {
@@ -177,7 +177,7 @@ impl CronContext {
     /// cleanup
      #[inline]
    pub(crate) async fn reload(&mut self, schema: String, db: Pool<Postgres>) -> Result<(), String> {
-        let cl = sqlx::query_as::<_, RpFnCron>(SELECT_CRON.replace("%SCHEMA%", schema.as_str()).as_str())
+        let cl = sqlx::query_as::<_, RpFnCron>(sqlx::AssertSqlSafe(SELECT_CRON.replace("%SCHEMA%", schema.as_str())))
             .fetch_all(&db).await.map_err(|e| e.to_string())?;
 
         self.crons.clear();

@@ -38,7 +38,7 @@ const LP: &'static str = "[py] ";
 const LP: &'static str = "";
 
 
-const SG: &str = include!("../../rppd.yaml");
+const SG: &str = include_str!("../../rppd.yaml");
 
 /// Schema Guard compatible schema definition, to be used in case of use as embedded library, to avoid the need of a separate rppd.yaml file.
 /// This is used to have a lib run without extantion install and trigger function configured.
@@ -76,7 +76,7 @@ impl RppdNodeCluster {
         let adr = if bind.chars().next().unwrap_or(' ').is_numeric() {
             addrsv[0].parse::<SocketAddr>().map_err(|e| format!("parsing {}: {}", bind, e))?
         } else {
-            let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(format!("Binding to {}", bind).as_str());
+            let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(format!("Binding to {}", bind).as_str()).collect();
             if ips.len() == 0 {
                 return Err(format!("{}No IpAddr found {}", LP, bind));
             }

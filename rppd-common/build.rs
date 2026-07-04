@@ -38,7 +38,7 @@ fn do_build(name: &str) -> io::Result<()> {
     let  dest = format!("src/{}/{}.rs", TEMP_GEN_DIR, name);
     println!("cargo:info=building: {} to {}", file, dest);
 
-    let _ = tonic_build::configure()
+    let _ = tonic_prost_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .out_dir(PathBuf::from(TEMP_GEN_DIR))
         .compile_protos(&[file.as_str()], &[DIR])?;

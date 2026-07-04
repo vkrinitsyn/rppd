@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
-use etcd::queue::QueueNameKey;
+use etcds::queue::QueueNameKey;
 use slog::{debug, info, trace};
 use tonic::{Request, Response, Status};
 use rppd_common::CFG_TABLE;

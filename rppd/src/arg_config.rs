@@ -395,9 +395,9 @@ mod tests {
 
     #[test]
     fn dns_test() {
-        let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host("localhost").unwrap();
+        let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host("localhost").unwrap().collect();
         assert!(ips.len() > 0);
-        let ipsd: Vec<std::net::IpAddr> = dns_lookup::lookup_host("127.0.0.1").unwrap();
+        let ipsd: Vec<std::net::IpAddr> = dns_lookup::lookup_host("127.0.0.1").unwrap().collect();
         assert_eq!(ipsd.len(), 1);
     }
 }

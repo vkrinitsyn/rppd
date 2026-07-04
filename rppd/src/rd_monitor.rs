@@ -188,7 +188,7 @@ impl RppdNodeCluster {
         loop {
             // check stored master id in DB -- might be changed because of network, restart etc,
             // DB is must have and DB have a trusted data, but DB data might be obsolete in case of master is down
-            match sqlx::query_scalar::<_, i32>(sql_id.as_str()).fetch_one(&self.db()).await {
+            match sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(sql_id.as_str())).fetch_one(&self.db()).await {
                 Ok(master_id) => {
                     prev_db_master = Some(master_id); // just in case of use on reset in db
                     if node_id == master_id {
@@ -307,13 +307,13 @@ impl RppdNodeCluster {
             .replace("%TABLE%", table.as_str());
 
         if let Some(master_id) = prev_db_master { // unregister previous master
-            if let Ok(_ok) = sqlx::query(sql_dwn.as_str()).bind(master_id).execute(&self.db()).await {
+            if let Ok(_ok) = sqlx::query(sqlx::AssertSqlSafe(sql_dwn)).bind(master_id).execute(&self.db()).await {
                 info!(self.log, "{}removed previous load master from DB row ID = {}", LP, master_id);
             }
         }
 
         let node_id = self.node_id.load(Ordering::Relaxed);
-        match sqlx::query(sql_up.as_str()).bind(node_id).execute(&self.db()).await {
+        match sqlx::query(sqlx::AssertSqlSafe(sql_up)).bind(node_id).execute(&self.db()).await {
             Ok(_ok) => {
                 self.master.store(true, Ordering::Relaxed);
                 self.master_id.store(node_id, Ordering::Relaxed);
@@ -326,12 +326,13 @@ impl RppdNodeCluster {
 
     /// TODO delete old records
     pub(crate) async fn cleanup_fn_logs(&self) {
-        let sql = crate::rd_fn::DELETE_LOG.replace("%SCHEMA%", self.cfg.read().await.schema.as_str());
+        if self.cfg_db {
+            let sql = crate::rd_fn::DELETE_LOG.replace("%SCHEMA%", self.cfg.read().await.schema.as_str());
 
-        if let Err(e) = sqlx::query(sql.as_str()).execute(&self.db()).await {
-            error!(self.log, "{}Cleanup logs by [{}] {}", LP, sql, e);
+            if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).execute(&self.db()).await {
+                error!(self.log, "{}Cleanup logs by [{}] {}", LP, sql, e);
+            }
         }
-
     }
 }
 

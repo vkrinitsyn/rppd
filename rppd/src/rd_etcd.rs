@@ -3,7 +3,7 @@ use uuid::Uuid;
 use rppd_common::protogen::rppd::MessageRequest;
 
 #[cfg(not(feature = "etcd-external"))]
-use etcd::{
+use etcds::{
     etcdpb::etcdserverpb::{
         WatchRequest,
         DeleteRangeRequest,
@@ -16,16 +16,16 @@ use etcd::{
 };
 
 
-use etcd::queue::QueueNameKey;
+use etcds::queue::QueueNameKey;
 
 #[cfg(feature = "etcd-external")] use tokio_stream::StreamExt;
 
 #[cfg(not(feature = "etcd-external"))] use tokio::sync::mpsc::{channel, error::SendError};
 #[cfg(not(feature = "etcd-external"))] use tonic::Request;
-#[cfg(not(feature = "etcd-external"))] use crate::rd_config::WatcherW;
+use crate::rd_config::WatcherW;
 
 #[cfg(feature = "etcd-embeded")] use tonic::transport::server::Router;
-#[cfg(feature = "etcd-embeded")] use etcd::cli::EtcdConfig;
+#[cfg(feature = "etcd-embeded")] use etcds::cli::EtcdConfig;
 #[allow(unused_imports)] #[cfg(feature = "tracer")] use opentelemetry::trace::*;
 #[allow(unused_imports)] #[cfg(feature = "tracer")] use opentelemetry_sdk::trace::*;
 use crate::arg_config::RppdConfig;
@@ -66,6 +66,10 @@ pub(crate) struct EtcdConnector {
 
 #[cfg(feature = "etcd-external")]
 const DEFAULT_ENDPOINT: &'static str = "localhost:2379";
+
+/// client-assigned watch id: every queue uses its own watch stream, so a fixed id is unique per stream
+#[cfg(feature = "etcd-external")]
+const EXTERNAL_WATCH_ID: i64 = 1;
 
 impl EtcdConnector {
 
@@ -262,11 +266,13 @@ impl RpFn {
                 }
 
                 #[cfg(feature = "etcd-external")]
-                match etcd.watch(queue_consumer_name.into_bytes(), None).await {
-                    Ok((watcher, mut stream)) => {
+                match etcd.watch(queue_consumer_name.into_bytes(),
+                                 Some(etcd_client::WatchOptions::new().with_watch_id(EXTERNAL_WATCH_ID))).await {
+                    Ok(stream) => {
+                        let (watch_sender, mut stream) = stream.split();
                         // register queue_name to watch_id
                         if let Some(mut w) = cluster.watchers.write().await
-                            .insert(queue_name.clone(), watcher) { // just in case is something there
+                            .insert(queue_name.clone(), WatcherW { sender: watch_sender, watch_id: EXTERNAL_WATCH_ID }) { // just in case is something there
                             if let Err(e) = w.cancel().await {
                                 warn!(log, "{}can't clean watcher for {} Etcd reply: {}", LP, queue_name, e);
                             }
@@ -321,5 +327,12 @@ impl WatcherW {
                     WatchCancelRequest { watch_id: self.watch_id}
                 ))
             }).await
+    }
+}
+
+#[cfg(feature = "etcd-external")]
+impl WatcherW {
+    async fn cancel(&mut self) -> Result<(), etcd_client::Error> {
+        self.sender.cancel(self.watch_id).await
     }
 }

@@ -111,7 +111,7 @@ pub mod rppd_trigger_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/rppg.RppdTrigger/event");
             let mut req = request.into_request();
             req.extensions_mut().insert(GrpcMethod::new("rppg.RppdTrigger", "event"));
@@ -133,7 +133,7 @@ pub mod rppd_trigger_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/rppg.RppdTrigger/status");
             let mut req = request.into_request();
             req.extensions_mut().insert(GrpcMethod::new("rppg.RppdTrigger", "status"));
@@ -278,7 +278,7 @@ pub mod rppd_trigger_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = eventSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -323,7 +323,7 @@ pub mod rppd_trigger_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = statusSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,

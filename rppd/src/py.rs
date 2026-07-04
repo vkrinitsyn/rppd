@@ -4,7 +4,7 @@ use std::ffi::CString;
 use std::mem::ManuallyDrop;
 use std::time::Instant;
 
-use pyo3::{IntoPyObject, Py, PyErr, PyObject, PyResult, Python};
+use pyo3::{IntoPyObject, Py, PyAny, PyErr, PyResult, Python};
 use pyo3::ffi::c_str;
 use pyo3::prelude::PyModule;
 use pyo3::types::{IntoPyDict, PyAnyMethods};
@@ -17,9 +17,9 @@ use crate::LP;
 /// ManuallyDrop for PyModule and db: PyObject
 pub struct PyContext {
     py_rt: ManuallyDrop<Py<PyModule>>,
-    py_db: ManuallyDrop<PyObject>,
+    py_db: ManuallyDrop<Py<PyAny>>,
     rt_etcd: ManuallyDrop<Py<PyModule>>,
-    py_etcd: Result<ManuallyDrop<PyObject>, PyErr>,
+    py_etcd: Result<ManuallyDrop<Py<PyAny>>, PyErr>,
     // capture: Result<ManuallyDrop<Bound<PyModule>>, PyErr>,
     created: Instant,
     /// last tiem use
@@ -29,7 +29,7 @@ pub struct PyContext {
 
 impl Drop for PyContext {
     fn drop(&mut self) {
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             unsafe {
                 ManuallyDrop::drop(&mut self.py_rt);
                 ManuallyDrop::drop(&mut self.py_db);
@@ -73,17 +73,17 @@ impl RppdNodeCluster {
     #[inline]
     pub(crate) async fn new_py_context(&self, f: &RpFn) -> Result<PyContext, PyErr> {
         let db_url = self.cfg.read().await.db_url();
-        let module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
+        let module: Py<PyModule> = Python::attach(|py| -> PyResult<_> {
             Ok(PyModule::import(py, POSTGRES_PY)?.into())
         })?;
 
         // connect to DB
         // let libpq_kv = format!("host=localhost sslmode=disable user={} password={} dbname={}", username, password, db);
-        let client: PyObject = Python::with_gil(|py| -> PyResult<_> {
+        let client: Py<PyAny> = Python::attach(|py| -> PyResult<_> {
             Ok(module.bind_borrowed(py).getattr("connect")?.call1((&db_url,))?.into())
         })?;
 
-        let etcd_module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
+        let etcd_module: Py<PyModule> = Python::attach(|py| -> PyResult<_> {
             Ok(PyModule::import(py, ETCD_PY)?.into())
         })?;
 
@@ -94,7 +94,7 @@ impl RppdNodeCluster {
 
         // connect to ETCD
         // see https://github.com/lupko/etcd3-client/blob/master/src/etcd3/client.py#L120
-        let etcd_client: Result<PyObject, PyErr> = Python::with_gil(|py| -> PyResult<_> {
+        let etcd_client: Result<Py<PyAny>, PyErr> = Python::attach(|py| -> PyResult<_> {
             Ok(etcd_module.bind_borrowed(py).getattr("client")?
                 .call( (host.clone(), port.clone()), None)?.into())
         });
@@ -134,7 +134,7 @@ impl PyContext {
 
 
     pub(crate) fn invoke(&mut self, x: &RpFnLog, fc: &RpFn) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let locals = [
                 (DB, self.py_db.bind_borrowed(py)),
                 (TOPIC, fc.topic.clone().into_pyobject(py)?.into_any().as_borrowed()),

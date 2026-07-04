@@ -27,14 +27,14 @@ pub struct DbEventRequest {
 pub mod db_event_request {
     /// rppd_config.id of caller host or None if called by trigger
     #[derive(serde::Serialize, serde::Deserialize)]
-    #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum OptionalCaller {
         #[prost(int32, tag = "4")]
         CallBy(i32),
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PkColumn {
     #[prost(string, tag = "1")]
     pub column_name: ::prost::alloc::string::String,
@@ -49,7 +49,7 @@ pub struct PkColumn {
 pub mod pk_column {
     /// see PkColumnType
     #[derive(serde::Serialize, serde::Deserialize)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum PkValue {
         #[prost(int32, tag = "5")]
         IntValue(i32),
@@ -70,7 +70,7 @@ pub struct DbEventResponse {
     pub repeat_with: ::prost::alloc::vec::Vec<PkColumn>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StatusRequest {
     /// The name includes schema, i.e.: schema.table
     /// default is public.rppd_config
@@ -89,7 +89,7 @@ pub struct StatusRequest {
 pub mod status_request {
     /// optional function status
     #[derive(serde::Serialize, serde::Deserialize)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum FnLog {
         /// function status as id from rppd_fn_log
         #[prost(int64, tag = "4")]
@@ -100,7 +100,7 @@ pub mod status_request {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FnStatus {
     #[prost(oneof = "fn_status::Status", tags = "1, 2, 3")]
     pub status: ::core::option::Option<fn_status::Status>,
@@ -108,7 +108,7 @@ pub struct FnStatus {
 /// Nested message and enum types in `FnStatus`.
 pub mod fn_status {
     #[derive(serde::Serialize, serde::Deserialize)]
-    #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Status {
         #[prost(uint32, tag = "1")]
         QueuePos(u32),
@@ -119,13 +119,13 @@ pub mod fn_status {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StatusFnsResponse {
     #[prost(string, repeated, tag = "1")]
     pub uuid: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StatusResponse {
     /// this node id
     #[prost(int32, tag = "1")]
@@ -148,7 +148,7 @@ pub struct StatusResponse {
 /// Nested message and enum types in `StatusResponse`.
 pub mod status_response {
     #[derive(serde::Serialize, serde::Deserialize)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum FnLog {
         /// status of requested function, NA=0 if no function requested
         #[prost(message, tag = "6")]

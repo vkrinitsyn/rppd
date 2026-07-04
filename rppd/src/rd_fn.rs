@@ -359,7 +359,7 @@ impl RpFnLog {
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set took_ms = $1, output = $2, error_msg = $3 where id = $4";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
-        if let Err(e) = sqlx::query(sql.as_str())
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(took)
             .bind(r.as_ref().ok())
             .bind(r.as_ref().err())
@@ -376,7 +376,7 @@ impl RpFnLog {
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set error_msg = $1 where id = $2";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
-        if let Err(e) = sqlx::query(sql.as_str())
+        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(Some(r))
             .bind(self.id)
             .execute(&db).await {
@@ -488,12 +488,12 @@ mod tests {
             .connect(url.as_str()).await
             .map_err(|e| e.to_string())?;
 
-        let r = sqlx::query_as::<_, RpFnLog>(RpFnLog::select(&"".to_string()).as_str())
+        let r = sqlx::query_as::<_, RpFnLog>(sqlx::AssertSqlSafe(RpFnLog::select(&"".to_string())))
             .fetch_all(&pool).await.map_err(|e| e.to_string())?;
         assert!(r.len() >= 0);
 
         let mut v = HashMap::new();
-        let id = sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&"public".to_string()).as_str())
+        let id = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(RpFnLog::insert_v(&"public".to_string())))
             .bind(0)
             .bind(0)
             .bind(0)
@@ -516,8 +516,8 @@ mod tests {
         assert_eq!(r.trig_value.as_ref().unwrap().len(), v.len());
         println!("{:?}", r);
 
-        let r2 = sqlx::query_as::<_, RpFnLog>(format!("select * from rppd_function_log {} "
-                                                      , r.select_sql("where")).as_str()) // instead of .bind()
+        let r2 = sqlx::query_as::<_, RpFnLog>(sqlx::AssertSqlSafe(format!("select * from rppd_function_log {} "
+                                                      , r.select_sql("where")))) // instead of .bind()
             .fetch_one(&pool).await
             .map_err(|e| e.to_string())?;
 

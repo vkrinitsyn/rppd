@@ -110,6 +110,8 @@ pub(crate) type HostType = String;
 pub struct RppdNodeCluster {
     /// parsed configs
     pub(crate) cfg: Arc<RwLock<RppdConfig>>,
+    /// config loaded from DB - table exists
+    pub(crate) cfg_db: bool,
     /// is the instance play master, receive trigger calls, schedule and call others
     pub(crate) master: Arc<AtomicBool>,
     /// is the node loaded all logs
@@ -178,12 +180,15 @@ pub struct RppdNodeCluster {
     #[cfg(feature = "tracer")] pub(crate) tracer: Arc<RwLock<Option<SdkTracer>>>,
 }
 #[cfg(feature = "etcd-external")]
-pub(crate) type WatcherW = etcd_client::Watcher;
+pub(crate) struct WatcherW {
+    pub(crate) sender: etcd_client::WatchRequestSender,
+    pub(crate) watch_id: i64,
+}
 
 #[cfg(not(feature = "etcd-external"))]
 pub(crate) struct  WatcherW {
-    pub(crate) sender: Sender<etcd::etcdpb::etcdserverpb::WatchRequest>,
-    pub(crate) watch_id: etcd::cluster::WatcherId,
+    pub(crate) sender: Sender<etcds::etcdpb::etcdserverpb::WatchRequest>,
+    pub(crate) watch_id: etcds::cluster::WatcherId,
 }
 
 #[inline]
@@ -227,7 +232,7 @@ impl RppdNodeCluster {
         };
 
         let sql = if x.pks.len() == 0 { sql } else { format!("{} and {}", sql, make_sql_cnd(&x.pks)) };
-        let mut r = sqlx::query_as::<_, RpHost>(sql.as_str());
+        let mut r = sqlx::query_as::<_, RpHost>(sqlx::AssertSqlSafe(sql));
         // PK ID set for Hosts is redundant, because config table has only one int PK, but use of common struct dictate to perform this way
         for x in &x.pks {
             if let Some(x) = &x.pk_value {
@@ -284,7 +289,7 @@ impl RppdNodeCluster {
         let sql = if x.is_none() || x.as_ref().unwrap().pks.len() == 0 { sql } else {
             format!("{} where {}", sql, make_sql_cnd(&x.as_ref().unwrap().pks))
         };
-        let mut r = sqlx::query_as::<_, RpFn>(sql.as_str());
+        let mut r = sqlx::query_as::<_, RpFn>(sqlx::AssertSqlSafe(sql.as_str()));
 
         if let Some(x) = &x {
             for column in &x.pks {
@@ -346,7 +351,7 @@ impl RppdNodeCluster {
     /// init
     pub async fn init(
         c: RppdConfig,
-        #[cfg(feature = "etcd-provided")] etcd: etcd::cluster::EtcdNode,
+        #[cfg(feature = "etcd-provided")] etcd: etcds::cluster::EtcdNode,
         log: Logger,
         #[cfg(feature = "tracer")] tracer: Option<SdkTracer>,
     ) -> Result<Self, String> {
@@ -359,9 +364,17 @@ impl RppdNodeCluster {
         let mut node_connections = BTreeMap::new();
         let mut node_id = HashMap::new();
         let sql = RpHost::select_active(&c); // init
-        let r = sqlx::query_as::<_, RpHost>(sql.as_str())
+        let mut cfg_db = true;
+        let r = match sqlx::query_as::<_, RpHost>(sqlx::AssertSqlSafe(sql.as_str()))
             .fetch_all(&pool).await
-            .map_err(|e| format!("Loading cluster of active nodes [{}]: {}", sql, e))?;
+            .map_err(|e| format!("Loading cluster of active nodes [{}]: {}", sql, e)) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(log, "[py] {}", e);
+                cfg_db = false;
+                vec![]
+            }
+        };
         debug!(log, "{}loaded {:?} for {}", LP, r, c.name);
         let mut master = false; // master is present and up
         let mut found_self = false; // is self registered
@@ -401,6 +414,7 @@ impl RppdNodeCluster {
 
         let cluster = RppdNodeCluster {
             cfg: Arc::new(RwLock::new(c)),
+            cfg_db: cfg_db,
             master: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
             node_id: Arc::new(AtomicI32::new(id)),
@@ -452,13 +466,14 @@ impl RppdNodeCluster {
 
         tokio::spawn(async move { // will execute as background, but will try to connect to this host
             if let Err(e) = ctx.start_bg(self_register, self_master).await {
-                crit!(ctx.log, "Failed to start: {}", e);
-            }
-            tokio::spawn(async move {
-                ctxm.start_monitoring().await;
-            });
-            while let Some(ci) = rsvr.recv().await {
-                ctx.execute(ci).await
+                crit!(ctx.log, "[rppd] Failed to start server process: {}", e);
+            } else {
+                tokio::spawn(async move {
+                    ctxm.start_monitoring().await;
+                });
+                while let Some(ci) = rsvr.recv().await {
+                    ctx.execute(ci).await
+                }
             }
         });
         let cfg_ctx = self.clone();
@@ -570,14 +585,14 @@ impl RppdNodeCluster {
             if let Some(ref rn) = fl.rn_fn_id {
                 if rn.save {
                     let r = if rn.trig_value {
-                        sqlx::query_scalar::<_, i64>(RpFnLog::insert_v(&schema).as_str())
+                        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(RpFnLog::insert_v(&schema)))
                             .bind(fl.node_id)
                             .bind(fl.fn_id)
                             .bind(fl.trig_type)
                             .bind(fl.trig_value.clone())
                             .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
                     } else {
-                        sqlx::query_scalar::<_, i64>(RpFnLog::insert(&schema).as_str())
+                        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(RpFnLog::insert(&schema)))
                             .bind(fl.node_id)
                             .bind(fl.fn_id)
                             .bind(fl.trig_type)
@@ -609,7 +624,7 @@ impl RppdNodeCluster {
                 let sql = INSERT_HOST
                     .replace("%SCHEMA%", schema.as_str())
                     .replace("%TABLE%", table.as_str());
-                let id = sqlx::query_scalar::<_, i32>(sql.as_str())
+                let id = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(sql))
                     .bind(&host)
                     .bind(&name)
                     .bind(if master { Some(true) } else { None })
@@ -626,7 +641,7 @@ impl RppdNodeCluster {
                 let sql = UP_MASTER
                     .replace("%SCHEMA%", schema.as_str())
                     .replace("%TABLE%", table.as_str());
-                if let Err(e) = sqlx::query(sql.as_str()).bind(id).execute(&pool).await {
+                if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(id).execute(&pool).await {
                     error!(self.log, "{}{}", LP, e);
                 }
             }
@@ -636,7 +651,7 @@ impl RppdNodeCluster {
                 .replace("%TABLE%", table.as_str())
                 ;
 
-            let master = sqlx::query_scalar::<_, bool>(sql.as_str())
+            let master = sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(sql))
                 .bind(id)
                 .fetch_one(&pool).await
                 .map_err(|e| e.to_string())?;
@@ -651,7 +666,7 @@ impl RppdNodeCluster {
 
         // load messages to internal queue from fn_log, check timeout and execution status,
         for l in sqlx::query_as::<_, RpFnLog>(
-            format!("{} where took_ms is null order by id", RpFnLog::select(&schema)).as_str())
+            sqlx::AssertSqlSafe(format!("{} where took_ms is null order by id", RpFnLog::select(&schema))))
             .fetch_all(&self.db()).await.map_err(|e| e.to_string())? {
             self.queueing(l, false).await; // append loaded on startup
         }
