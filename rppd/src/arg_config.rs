@@ -24,6 +24,7 @@ pub const CFG_CRON_TABLE: &str = "rppd_cron";
 pub const SCHEMA: &str = "schema";
 pub const URL: &str = "url";
 pub const BIND: &str = "bind";
+pub const DF: &str = "df";
 pub const LOCALHOST: &str = "localhost";
 
 pub const MAX_QUEUE_SIZE: usize = 1000;
@@ -64,6 +65,9 @@ pub struct RppdConfig {
     pub schema: String,
     pub table: String,
     pub db_url: String,
+    /// Apache DataFusion (aka Ballista) scheduler address, ex: "df://localhost:50050", to expose a `DF` python client.
+    /// None disables the DF client. Requires the "datafusion" cargo feature and the python 'ballista' package
+    pub df_url: Option<String>,
     pub user: String,
     pub pwd: String,
     pub file: Option<String>,
@@ -99,6 +103,7 @@ impl Default for RppdConfig {
             cluster: Uuid::new_v4(),
             name: this,
             db_url: DEFAULT_DB_URL.replace("$USER", user.as_str()),
+            df_url: None,
             user,
             pwd,
             file: None,
@@ -117,6 +122,9 @@ impl Display for RppdConfig {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         writeln!(f, "db: {}", self.db_url)?;
+        if let Some(df) = &self.df_url {
+            writeln!(f, "df: {}", df)?;
+        }
         if let Some(fl) = &self.file {
             writeln!(f, "config: {}", fl)?;
         }
@@ -152,6 +160,7 @@ impl RppdConfig {
         let def = RppdConfig::default();
         let mut user = def.user.clone();
         let mut db_url = def.db_url.clone();
+        let mut df_url = def.df_url.clone();
         let mut pwd = def.pwd.clone();
         let file = if file_idx > 0 { Some((&input[file_idx]).to_string()) } else { None };
         let mut schema = def.schema.clone();
@@ -173,6 +182,9 @@ impl RppdConfig {
                     pwd = v;
                 } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "postgresql://", URL) {
                     db_url = v;
+                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "df://", DF) {
+                    // Apache DataFusion (aka Ballista) scheduler url, checked before BIND since it also contains ':'
+                    df_url = Some(v);
                 } else if input[i].starts_with("--force_master=") {
                     force_master = input[i].ends_with("=true") || input[i].ends_with("=yes");
                 } else if input[i].starts_with("--name=") {
@@ -206,7 +218,7 @@ impl RppdConfig {
         }
 
         Ok(RppdConfig {
-            node, cluster, name, db_url, user, pwd, file,
+            node, cluster, name, db_url, df_url, user, pwd, file,
             schema, table: CFG_TABLE.to_string(),
             bind, port,
             max_queue_size: RppdConfig::max_queue_size(),
@@ -312,6 +324,12 @@ impl RppdConfig {
         let urls: Vec<&str> = self.db_url.split("@").collect();
         format!("postgres://{}:{}@{}", self.user, self.pwd, urls[urls.len() - 1])
     }
+
+    /// Apache DataFusion (aka Ballista) scheduler url ready to pass to `BallistaSessionContext`, ex: "df://localhost:50050".
+    /// None if not configured, disabling the `DF` python client
+    pub(crate) fn df_url(&self) -> Option<String> {
+        self.df_url.as_ref().map(|v| if v.starts_with("df://") { v.clone() } else { format!("df://{}", v) })
+    }
 }
 
 #[allow(warnings)]
@@ -391,6 +409,22 @@ mod tests {
                    RppdConfig::parse_table_name(&"".to_string(), &".t".to_string()));
         assert_eq!(format!("{}.t", DEFAULT_SCHEMA),
                    RppdConfig::parse_table_name(&"".to_string(), &"t".to_string()));
+    }
+
+    #[test]
+    fn config_args_df_test() {
+        let cfg = ["test".to_string(), "postgresql://db".to_string(), "df://scheduler:50050".to_string()].to_vec();
+        let cfg = RppdConfig::new(cfg).unwrap();
+        assert_eq!(cfg.df_url.as_deref(), Some("df://scheduler:50050"));
+        assert_eq!(cfg.df_url().as_deref(), Some("df://scheduler:50050"));
+    }
+
+    #[test]
+    fn df_url_normalize_test() {
+        let mut cfg = RppdConfig::default();
+        assert_eq!(cfg.df_url(), None);
+        cfg.df_url = Some("scheduler:50050".to_string());
+        assert_eq!(cfg.df_url().as_deref(), Some("df://scheduler:50050"));
     }
 
     #[test]

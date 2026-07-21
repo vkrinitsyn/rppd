@@ -100,6 +100,7 @@ TABLE -- fc.fns.schema_table
 TRIG -- UPDATE = 0;  INSERT = 1;  DELETE = 2;  TRUNCATE = 3;
 "COLUMN_NAME" --i.e. "ID" = see trig_value
 ETCD -- The etcd client
+DF -- Apache DataFusion (aka Ballista) client, see below
 ```
 
 ### python example:
@@ -155,6 +156,17 @@ ETCD.put('/q/test/producer/111', 'test kv to etcd queue')
 check
 ```sql
 select * from test_sink where data like '/q/%';
+```
+
+### DataFusion / Ballista client
+
+Requires building rppd with the `datafusion` cargo feature and the python `ballista` package (`pip install ballista`) available.
+Configure the scheduler address as `df_url` in the library config (a text/file config key `df`, a `df://host:port` app arg, or `RppdConfig.df_url` when used as an embedded library) -- see [Ballista Python quickstart](https://datafusion.apache.org/ballista/user-guide/python/quickstart.html).
+When configured, every python function gets a ready-to-use `DF` variable (a `BallistaSessionContext`); when not configured, `DF` is simply not injected.
+
+```python
+df = DF.sql("SELECT * FROM t LIMIT 5")
+df.show()
 ```
 
 

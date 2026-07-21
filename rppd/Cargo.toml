@@ -1,7 +1,7 @@
 
 [package]
 name = "rppd"
-version = "0.2.5"
+version = "0.2.6"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - Rust Python Postgres"
@@ -63,6 +63,10 @@ etcd-external = ["dep:etcd-client"]
 # The RPPD use as a library with config table extranally provided
 lib-embedded = []
 tracer = ["dep:opentelemetry_sdk", "dep:opentelemetry", "etcds/tracer"]
+
+# expose an Apache DataFusion (aka Ballista) distributed SQL client to python functions as the `DF` variable.
+# Requires the python 'ballista' package (pip install ballista) and df_url configured, see RppdConfig::df_url
+datafusion = []
 
 
 [profile.dev]

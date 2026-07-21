@@ -20,6 +20,10 @@ pub struct PyContext {
     py_db: ManuallyDrop<Py<PyAny>>,
     rt_etcd: ManuallyDrop<Py<PyModule>>,
     py_etcd: Result<ManuallyDrop<Py<PyAny>>, PyErr>,
+    /// Apache DataFusion (aka Ballista) BallistaSessionContext, exposed to python as `DF`.
+    /// None if df_url is not configured or the "datafusion" feature is disabled; connection failures are logged and also become None
+    #[cfg(feature = "datafusion")]
+    py_df: Option<ManuallyDrop<Py<PyAny>>>,
     // capture: Result<ManuallyDrop<Bound<PyModule>>, PyErr>,
     created: Instant,
     /// last tiem use
@@ -36,6 +40,10 @@ impl Drop for PyContext {
                 ManuallyDrop::drop(&mut self.rt_etcd);
                 if let Ok(etcd) = &mut self.py_etcd {
                     ManuallyDrop::drop(etcd);
+                }
+                #[cfg(feature = "datafusion")]
+                if let Some(df) = &mut self.py_df {
+                    ManuallyDrop::drop(df);
                 }
             }
         });
@@ -60,9 +68,12 @@ pub enum PyCall {
 /// python module to import
 pub const POSTGRES_PY: &str = "psycopg2";
 pub const ETCD_PY: &str = "etcd3";
+/// Apache DataFusion (aka Ballista) python client, see https://datafusion.apache.org/ballista/user-guide/python/quickstart.html
+pub const DATAFUSION_PY: &str = "ballista";
 
 pub const DB: &str = "DB";
 pub const ETCD: &str = "ETCD";
+pub const DF: &str = "DF";
 pub const TOPIC: &str = "TOPIC";
 pub const TABLE: &str = "TABLE";
 pub const TRIG: &str = "TRIG";
@@ -103,11 +114,31 @@ impl RppdNodeCluster {
             slog::error!(self.log, "{}failed to connect to etcd v3 [{}:{}]: {}", LP, host, port, e);
         }
 
+        // connect to Apache DataFusion (aka Ballista) scheduler, only if configured
+        #[cfg(feature = "datafusion")]
+        let py_df: Option<ManuallyDrop<Py<PyAny>>> = match self.cfg.read().await.df_url() {
+            None => None,
+            Some(url) => match Python::attach(|py| -> PyResult<Py<PyAny>> {
+                Ok(PyModule::import(py, DATAFUSION_PY)?
+                    .getattr("BallistaSessionContext")?
+                    .call1((url.as_str(),))?
+                    .into())
+            }) {
+                Ok(ctx) => Some(ManuallyDrop::new(ctx)),
+                Err(e) => {
+                    slog::error!(self.log, "{}failed to connect to datafusion/ballista scheduler [{}]: {}", LP, url, e);
+                    None
+                }
+            }
+        };
+
         Ok(PyContext {
             py_rt: ManuallyDrop::new(module),
             py_db: ManuallyDrop::new(client),
             rt_etcd: ManuallyDrop::new(etcd_module),
             py_etcd: etcd_client.map(|p| ManuallyDrop::new(p)),
+            #[cfg(feature = "datafusion")]
+            py_df,
             created: Instant::now(),
             ltu: Instant::now(),
         })
@@ -154,6 +185,11 @@ impl PyContext {
             
             if let Ok(e) = &self.py_etcd {
                 let _ = locals.set_item(ETCD, e.bind_borrowed(py))?;
+            }
+
+            #[cfg(feature = "datafusion")]
+            if let Some(df) = &self.py_df {
+                let _ = locals.set_item(DF, df.bind_borrowed(py))?;
             }
 
             let capture_instance = if fc.fn_logging {
