@@ -307,7 +307,11 @@ impl RpFn {
     }
 }
 
-const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, started_at, took_ms, error_msg from %SCHEMA%.rppd_function_log ";
+// `output` must be listed: RpFnLog has the field, so FromRow looks for it and a
+// startup restore fails with "no column found for name: output" the moment
+// rppd_function_log has any row to restore. The node then never sets `started`,
+// and every later event is refused with the misleading "not a master".
+const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, started_at, took_ms, output, error_msg from %SCHEMA%.rppd_function_log ";
 
 const INSERT_LOG_V: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type, trig_value) values ($1, $2, $3, $4) returning id";
 const INSERT_LOG: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type) values ($1, $2, $3) returning id";

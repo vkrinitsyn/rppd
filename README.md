@@ -101,7 +101,23 @@ TRIG -- UPDATE = 0;  INSERT = 1;  DELETE = 2;  TRUNCATE = 3;
 "COLUMN_NAME" --i.e. "ID" = see trig_value
 ETCD -- The etcd client
 DF -- Apache DataFusion (aka Ballista) client, see below
+CH -- ClickHouse client (clickhouse_connect), see below
 ```
+
+### ClickHouse client `CH`
+
+Set `ch_url` (or, under yaxaha, the node's `serve_clickhouse` + `clickhouse_url`
+config rows) to expose a `clickhouse_connect` client to every function as `CH`,
+alongside `DB`. Requires the python `clickhouse_connect` package; a missing
+package or a refused connection is logged and simply leaves `CH` unbound.
+
+```python
+CH.command("CREATE TABLE IF NOT EXISTS analytics.t (id Int32) ENGINE = MergeTree ORDER BY id")
+CH.insert('analytics.t', [[1]], column_names=['id'])
+```
+
+A worked example that joins a PostgreSQL row with live cluster status and lands
+both in ClickHouse is in `examples/` (`fn2_queue_to_clickhouse.py`).
 
 ### python example:
 ```python

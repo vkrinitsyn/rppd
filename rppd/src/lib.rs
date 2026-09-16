@@ -107,6 +107,26 @@ impl RppdNodeCluster {
             .add_service(RppdTriggerServer::new(self.clone()))
     }
     
+    /// Follow an external leader election.
+    ///
+    /// Embedded in a cluster that already elects a leader (yaxaha), rppd must
+    /// not run an election of its own: the node the cluster made leader is the
+    /// node that should execute functions. The embedder calls this whenever the
+    /// leader changes, having already pointed `rppd_config.master` at that node.
+    /// Returns true when the flag actually changed.
+    pub async fn set_master(&self, master: bool) -> bool {
+        let was = self.master.swap(master, Ordering::Relaxed);
+        if was != master {
+            info!(self.log, "{}master follows cluster leader: {} -> {}", LP, was, master);
+        }
+        was != master
+    }
+
+    /// Whether this node currently executes functions.
+    pub fn is_master(&self) -> bool {
+        self.master.load(Ordering::Relaxed)
+    }
+
     /// giveup master
     pub async fn unmaster(&self) {
         if self.master.load(Ordering::Relaxed) {

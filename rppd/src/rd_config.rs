@@ -51,6 +51,8 @@ pub(crate) const DWN_MASTER: &str = "update %SCHEMA%.%TABLE% set master = NULL w
 
 /// connection timeout. also sleep timeout on monitoring
 pub(crate) const TIMEOUT_MS: u64 = 1000;
+/// how long before coming back for an event shelved because the pool was busy
+const RETRY_DRIVE_MS: u64 = 50;
 /// max errors including timeout, each attemnt after sleep of timeout, before
 #[cfg(not(feature = "lib-embedded"))]
 pub(crate) const MAX_ERRORS: u8 = 2;
@@ -124,6 +126,8 @@ pub struct RppdNodeCluster {
     pub(crate) max_context: Arc<AtomicU16>,
     /// currently running functions
     pub(crate) running: Arc<AtomicI32>,
+    /// a delayed "pick the next queued event" is already scheduled, see respawn_drive()
+    retry_pending: Arc<AtomicBool>,
 
     /// postgres connection pool use by sqlx on init
     pub(crate) db: Pool<Postgres>,
@@ -381,11 +385,16 @@ impl RppdNodeCluster {
         let mut found_self_master = false; // is self registered
         let mut id = 0;
         let mut master_id = 0;
+        // Match self by bind address as well as by name. Embedded in a cluster,
+        // the rppd_config rows are written from the cluster's own node roster,
+        // where every node knows its peers' host:port but not their local
+        // `name` - so host is the only identity every writer can supply.
+        let self_host = format!("{}:{}", c.bind, c.port);
         for n in r {
             if n.master.unwrap_or(false) {
                 master_id = n.id;
             }
-            if n.host_name == c.name {
+            if n.host_name == c.name || n.host == self_host {
                 found_self = true;
                 id = n.id;
                 found_self_master = n.master.unwrap_or(false);
@@ -422,6 +431,7 @@ impl RppdNodeCluster {
             max_db_connections: Arc::new(AtomicU16::new(10)),
             max_context: Arc::new(AtomicU16::new(0)),
             running: Arc::new(AtomicI32::new(0)),
+            retry_pending: Arc::new(AtomicBool::new(false)),
             db: pool,
             nodes: Arc::new(RwLock::new(nodes)),
             stat: Arc::new(RwLock::new(ClusterStat::default())),
@@ -500,6 +510,51 @@ impl RppdNodeCluster {
                 }
             }
         });
+    }
+
+    /// Make sure something comes back for a queued event.
+    ///
+    /// The executor is token driven: every completed execution sends `None`,
+    /// which picks the next queued item. Each path that shelves an event because
+    /// the context pool is at capacity used to return WITHOUT putting a token
+    /// back, so every such event destroyed one. Once the in-flight executions
+    /// drained, the token count reached zero and the node stopped executing
+    /// anything at all while its queue still held work - until a restart. That
+    /// is why throughput tracked `max_db_connections` and then simply stopped.
+    ///
+    /// Only one retry is kept outstanding, so a burst of shelved events does not
+    /// turn into a burst of wake-ups.
+    fn respawn_drive(&self) {
+        if self.retry_pending.swap(true, Ordering::Relaxed) {
+            return; // one is already on its way
+        }
+        let sender = self.sender.clone();
+        let pending = self.retry_pending.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(RETRY_DRIVE_MS)).await;
+            pending.store(false, Ordering::Relaxed);
+            let _ = sender.send(None).await;
+        });
+    }
+
+    /// Drop python contexts that have aged out of the pool and hand their slots
+    /// back, returning how many were retired. `max_context` counts contexts that
+    /// EXIST, so it has to come down when they are retired or the pool can never
+    /// recover. Safe to call at any time: it only removes contexts nobody holds.
+    async fn reap_contexts(&self) -> u16 {
+        let mut rm = 0;
+        self.exec.write().await
+            .retain(|p| if let Ok(pp) = p.try_lock() {
+                if pp.alive() { true } else {
+                    rm += 1;
+                    false
+                }
+            } else { true });
+        if rm > 0 {
+            let max = self.max_context.load(Ordering::Relaxed);
+            self.max_context.store(if max > rm { max - rm } else { 0 }, Ordering::Relaxed);
+        }
+        rm
     }
 
     pub(crate) async fn check_fn(&self, table_name: &String) -> BTreeMap<i32, RpFnId> {
@@ -691,17 +746,7 @@ impl RppdNodeCluster {
         let f = match f {
             None => match self.queue.write().await.pick_one() {
                 None => { // nothing to execute from topics or not ready as a queue
-                    let mut rm = 0;
-                    self.exec.write().await
-                        .retain(|p| if let Ok(pp) = p.try_lock() {
-                            if pp.alive() { true } else {
-                                rm += 1;
-                                false
-                            }
-                        } else { true });
-                    let max = self.max_context.load(Ordering::Relaxed);
-                    let max = if max > rm { max - rm } else { 0 };
-                    self.max_context.store(max, Ordering::Relaxed);
+                    self.reap_contexts().await;
                     return;
                 }
                 Some(f) => f
@@ -743,9 +788,21 @@ impl RppdNodeCluster {
             Some(fc) => {
                 let started = Instant::now();
 
-                let c = self.exec.write().await.pop_back();
+                let mut c = self.exec.write().await.pop_back();
+                if c.is_none() {
+                    // No free context. Retire the ones that aged out BEFORE
+                    // refusing: `max_context` counts contexts that exist, and the
+                    // only other place it comes down needs the queue to be empty
+                    // at that instant - which sustained load never reaches. Once
+                    // it reached max_db_connections every event re-queued forever
+                    // and the node stopped executing anything until a restart.
+                    if self.reap_contexts().await > 0 {
+                        c = self.exec.write().await.pop_back();
+                    }
+                }
                 if c.is_none() && max_con_cfg <= self.max_context.load(Ordering::Relaxed) {
                     let _ = self.queueing(f, true).await; // re-queing, put back to queue
+                    self.respawn_drive(); // ...and come back for it
                     return;
                 }
                 let p = match c {
@@ -779,7 +836,18 @@ impl RppdNodeCluster {
                 #[cfg(feature = "tracer")]
                 let mut s = self.tracer.read().await.as_ref().map(|t| t.start(_name));
                 tokio::spawn(async move {
-                    let r = p.lock().await.invoke(&f, &fc);
+                    // invoke() runs the Python function SYNCHRONOUSLY. Calling it
+                    // straight from an async task blocks a whole runtime worker
+                    // for the duration, and on a small node (one core = one
+                    // worker) that starves every other task: the completions that
+                    // would return contexts to the pool and send the next drive
+                    // token, the gRPC server, and the cluster ping/apply loops.
+                    // block_in_place hands the rest of the runtime to another
+                    // thread while Python runs.
+                    let r = {
+                        let mut ctx = p.lock().await;
+                        tokio::task::block_in_place(|| ctx.invoke(&f, &fc))
+                    };
 
                     #[cfg(not(feature = "etcd-external"))]
                     if let Some(key) = &f.key {
@@ -835,6 +903,7 @@ impl RppdNodeCluster {
                         let _ = self.sender.send(Some(l)).await; // queueing()
                     } else {
                         self.queue.write().await.put_one(l, topic, fn_id, false);
+                        self.respawn_drive(); // parked at capacity - come back for it
                     }
                 }
                 Some(node_id) => if let Some(node) = self.node_connections.read().await.get(&node_id) {

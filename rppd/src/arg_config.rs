@@ -25,6 +25,7 @@ pub const SCHEMA: &str = "schema";
 pub const URL: &str = "url";
 pub const BIND: &str = "bind";
 pub const DF: &str = "df";
+pub const CH: &str = "ch";
 pub const LOCALHOST: &str = "localhost";
 
 pub const MAX_QUEUE_SIZE: usize = 1000;
@@ -68,6 +69,9 @@ pub struct RppdConfig {
     /// Apache DataFusion (aka Ballista) scheduler address, ex: "df://localhost:50050", to expose a `DF` python client.
     /// None disables the DF client. Requires the "datafusion" cargo feature and the python 'ballista' package
     pub df_url: Option<String>,
+    /// ClickHouse HTTP endpoint, ex: "http://localhost:8123", to expose a `CH` python client.
+    /// None disables the CH client. Requires the python 'clickhouse_connect' package
+    pub ch_url: Option<String>,
     pub user: String,
     pub pwd: String,
     pub file: Option<String>,
@@ -104,6 +108,7 @@ impl Default for RppdConfig {
             name: this,
             db_url: DEFAULT_DB_URL.replace("$USER", user.as_str()),
             df_url: None,
+            ch_url: None,
             user,
             pwd,
             file: None,
@@ -124,6 +129,9 @@ impl Display for RppdConfig {
         writeln!(f, "db: {}", self.db_url)?;
         if let Some(df) = &self.df_url {
             writeln!(f, "df: {}", df)?;
+        }
+        if let Some(ch) = &self.ch_url {
+            writeln!(f, "ch: {}", ch)?;
         }
         if let Some(fl) = &self.file {
             writeln!(f, "config: {}", fl)?;
@@ -161,6 +169,7 @@ impl RppdConfig {
         let mut user = def.user.clone();
         let mut db_url = def.db_url.clone();
         let mut df_url = def.df_url.clone();
+        let mut ch_url = def.ch_url.clone();
         let mut pwd = def.pwd.clone();
         let file = if file_idx > 0 { Some((&input[file_idx]).to_string()) } else { None };
         let mut schema = def.schema.clone();
@@ -185,6 +194,9 @@ impl RppdConfig {
                 } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "df://", DF) {
                     // Apache DataFusion (aka Ballista) scheduler url, checked before BIND since it also contains ':'
                     df_url = Some(v);
+                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "http://", CH) {
+                    // ClickHouse HTTP endpoint, likewise before BIND
+                    ch_url = Some(v);
                 } else if input[i].starts_with("--force_master=") {
                     force_master = input[i].ends_with("=true") || input[i].ends_with("=yes");
                 } else if input[i].starts_with("--name=") {
@@ -218,7 +230,7 @@ impl RppdConfig {
         }
 
         Ok(RppdConfig {
-            node, cluster, name, db_url, df_url, user, pwd, file,
+            node, cluster, name, db_url, df_url, ch_url, user, pwd, file,
             schema, table: CFG_TABLE.to_string(),
             bind, port,
             max_queue_size: RppdConfig::max_queue_size(),
@@ -330,6 +342,11 @@ impl RppdConfig {
     pub(crate) fn df_url(&self) -> Option<String> {
         self.df_url.as_ref().map(|v| if v.starts_with("df://") { v.clone() } else { format!("df://{}", v) })
     }
+
+    /// ClickHouse endpoint as a DSN `clickhouse_connect` accepts, scheme added when absent.
+    pub(crate) fn ch_url(&self) -> Option<String> {
+        self.ch_url.as_ref().map(|v| if v.contains("://") { v.clone() } else { format!("http://{}", v) })
+    }
 }
 
 #[allow(warnings)]
@@ -425,6 +442,18 @@ mod tests {
         assert_eq!(cfg.df_url(), None);
         cfg.df_url = Some("scheduler:50050".to_string());
         assert_eq!(cfg.df_url().as_deref(), Some("df://scheduler:50050"));
+    }
+
+    #[test]
+    fn ch_url_normalize_test() {
+        let mut cfg = RppdConfig::default();
+        // unset means no CH client is exposed to python at all
+        assert_eq!(cfg.ch_url(), None);
+        cfg.ch_url = Some("ch.lan:8123".to_string());
+        assert_eq!(cfg.ch_url().as_deref(), Some("http://ch.lan:8123"));
+        // an explicit scheme is left alone, https included
+        cfg.ch_url = Some("https://ch.lan:8443".to_string());
+        assert_eq!(cfg.ch_url().as_deref(), Some("https://ch.lan:8443"));
     }
 
     #[test]

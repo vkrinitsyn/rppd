@@ -24,6 +24,10 @@ pub struct PyContext {
     /// None if df_url is not configured or the "datafusion" feature is disabled; connection failures are logged and also become None
     #[cfg(feature = "datafusion")]
     py_df: Option<ManuallyDrop<Py<PyAny>>>,
+    /// ClickHouse client, exposed to python as `CH`, for tables using
+    /// on_commit_clickhouse. None if ch_url is not configured; a failed
+    /// connection or a missing python package is logged and also becomes None
+    py_ch: Option<ManuallyDrop<Py<PyAny>>>,
     // capture: Result<ManuallyDrop<Bound<PyModule>>, PyErr>,
     created: Instant,
     /// last tiem use
@@ -40,6 +44,9 @@ impl Drop for PyContext {
                 ManuallyDrop::drop(&mut self.rt_etcd);
                 if let Ok(etcd) = &mut self.py_etcd {
                     ManuallyDrop::drop(etcd);
+                }
+                if let Some(ch) = &mut self.py_ch {
+                    ManuallyDrop::drop(ch);
                 }
                 #[cfg(feature = "datafusion")]
                 if let Some(df) = &mut self.py_df {
@@ -70,10 +77,13 @@ pub const POSTGRES_PY: &str = "psycopg2";
 pub const ETCD_PY: &str = "etcd3";
 /// Apache DataFusion (aka Ballista) python client, see https://datafusion.apache.org/ballista/user-guide/python/quickstart.html
 pub const DATAFUSION_PY: &str = "ballista";
+/// ClickHouse python client, see https://clickhouse.com/docs/integrations/python
+pub const CLICKHOUSE_PY: &str = "clickhouse_connect";
 
 pub const DB: &str = "DB";
 pub const ETCD: &str = "ETCD";
 pub const DF: &str = "DF";
+pub const CH: &str = "CH";
 pub const TOPIC: &str = "TOPIC";
 pub const TABLE: &str = "TABLE";
 pub const TRIG: &str = "TRIG";
@@ -132,6 +142,23 @@ impl RppdNodeCluster {
             }
         };
 
+        // connect to ClickHouse, only if configured
+        let py_ch: Option<ManuallyDrop<Py<PyAny>>> = match self.cfg.read().await.ch_url() {
+            None => None,
+            Some(url) => match Python::attach(|py| -> PyResult<Py<PyAny>> {
+                Ok(PyModule::import(py, CLICKHOUSE_PY)?
+                    .getattr("get_client")?
+                    .call((), Some(&[("dsn", url.as_str())].into_py_dict(py)?))?
+                    .into())
+            }) {
+                Ok(c) => Some(ManuallyDrop::new(c)),
+                Err(e) => {
+                    slog::error!(self.log, "{}failed to connect to ClickHouse [{}]: {}", LP, url, e);
+                    None
+                }
+            }
+        };
+
         Ok(PyContext {
             py_rt: ManuallyDrop::new(module),
             py_db: ManuallyDrop::new(client),
@@ -139,6 +166,7 @@ impl RppdNodeCluster {
             py_etcd: etcd_client.map(|p| ManuallyDrop::new(p)),
             #[cfg(feature = "datafusion")]
             py_df,
+            py_ch,
             created: Instant::now(),
             ltu: Instant::now(),
         })
@@ -190,6 +218,11 @@ impl PyContext {
             #[cfg(feature = "datafusion")]
             if let Some(df) = &self.py_df {
                 let _ = locals.set_item(DF, df.bind_borrowed(py))?;
+            }
+
+            // alongside DB, for a table with on_commit_clickhouse set
+            if let Some(ch) = &self.py_ch {
+                let _ = locals.set_item(CH, ch.bind_borrowed(py))?;
             }
 
             let capture_instance = if fc.fn_logging {

@@ -1,7 +1,7 @@
 
 [package]
 name = "rppd"
-version = "0.2.6"
+version = "0.2.7"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - Rust Python Postgres"
@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 
 [dependencies]
-slog = { version = "2.8", features=["default", "max_level_debug", "release_max_level_info"] }
+slog = { version = "2.8", features=["default", "max_level_debug", "release_max_level_debug"] }
 sloggers = "2.2"
 chrono = { version = "0.4.45", features = ["serde"] }
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "net", "rt", "fs", "time", "signal", "signal-hook-registry" ] }
@@ -33,7 +33,7 @@ bb8-postgres = {version = "0.9.0", features = ["with-chrono-0_4","with-uuid-0_8"
 thiserror = "2"
 pyo3 = { version = "^0.29", features = ["auto-initialize", "uuid"] }
 
-etcds = {version = "0.16"}
+etcds = {version = "0.17"}
 etcd-client = { version = "^0.19", optional = true}
 
 sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "chrono"] }
