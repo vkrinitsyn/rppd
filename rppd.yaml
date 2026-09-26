@@ -1,243 +1,325 @@
-# /*%LPH%*/
-
-  database:
+# rppd's tables, as a SchemaGuard schema. THE canonical definition.
+#
+# There is no hand-written CREATE TABLE for these any more, and no ALTER either.
+# Both were the same mistake in two shapes: `CREATE TABLE IF NOT EXISTS` is a
+# no-op on an existing table, so new columns needed a second, hand-maintained
+# ALTER block that had to be kept in step with the first by memory. A schema
+# file has no such halves - it says what should exist, and the one component
+# that already knows how to turn that into DDL does it.
+#
+# ABSENCE MEANS UNCHANGED. Every column an installed cluster has and this file
+# does not mention is left alone, and SchemaGuard generates no DROP for it. So
+# adding a column here is safe on a database that predates it, and removing a
+# line from here does not remove anything from anybody's database.
+#
+# `@extschema@` is substituted with the configured schema before this is parsed.
+database:
   - schema:
-    schemaName: @extschema@
+    schemaName: "@extschema@"
     tables:
+
+      # ── node registry ────────────────────────────────────────────────────
       - table:
-          tableName: rppd_function
-          description: >
-            Python function code, linked table and topic.
-            If modify, than the cache will be refreshed.
-            Functions triggered for same topic OR table i.e. many fn per event will order by id.
+          tableName: rppd_config
+          description: App node host binding and master flag; a change notifies the others
           columns:
             - column:
                 name: id
                 type: serial
                 constraint:
-                  primaryKey: true
+                    primaryKey: true
+                    nullable: false
+            - column:
+                name: host
+                type: varchar(64)
+                constraint:
+                    nullable: false
+                # SchemaGuard expresses uniqueness as a unique INDEX, not a
+                # column constraint. Postgres implements a UNIQUE constraint
+                # with a unique index anyway, so the enforcement is identical;
+                # the only difference is that it is not listed in
+                # pg_constraint, which nothing here reads.
+                index:
+                    unique: true
+                description: The node address and port to connect
+            - column:
+                name: host_name
+                type: varchar(64)
+                constraint:
+                    nullable: false
+                index:
+                    unique: true
+                description: Readable name for a node host instance
+            - column:
+                name: active_since
+                type: timestamptz
+                defaultValue: current_timestamp
+                description: NULL or a future value marks the node inactive
+            - column:
+                name: max_db_connections
+                type: int
+                defaultValue: "10"
+                constraint:
+                    nullable: false
+            - column:
+                name: master
+                type: bool
+                index:
+                    unique: true
+                description: "The node acts as cluster coordinator. Used values: true or null"
+
+      # ── functions ────────────────────────────────────────────────────────
+          triggers:
+            - trigger:
+                name: "@extschema@_rppd_config_event"
+                event: after insert or update or delete
+                when: for each row
+                proc: "@extschema@.rppd_event()"
+      - table:
+          tableName: rppd_function
+          description: Python function code, linked table and topic. Modifying a row refreshes the cache.
+          columns:
+            - column:
+                name: id
+                type: serial
+                constraint:
+                    primaryKey: true
+                    nullable: false
             - column:
                 name: code
                 type: text
                 constraint:
-                  nullable: false
+                    nullable: false
+                description: >
+                    The python body. Left NOT NULL as rppd declared it: a
+                    git-sourced row is inserted with a placeholder and the
+                    cluster replaces it, so rppd never sees a row it cannot
+                    load. Relaxing this would make "not yet fetched" and
+                    "deliberately empty" the same state.
             - column:
                 name: checksum
                 type: varchar(64)
                 constraint:
-                  nullable: false
+                    nullable: false
+                description: sha256 of the body; rppd refreshes its cache when this changes
             - column:
                 name: schema_table
                 type: varchar(64)
-                description: >
-                  The rppd_event() must trigger on the corresponding "schema_table" to fire the function,
-                  see topic to identify execution order.
-                  if start with "/" then will create a watcher to etcd server.
-                  The /q/ or /queue/ required for messaging queue if use a rust etcd impl
                 constraint:
-                  nullable: false
+                    nullable: false
+                description: The table whose rppd_event() fires this function; a leading / makes it an etcd watcher
             - column:
                 name: topic
                 type: varchar(64)
-                defaultValue: ''
-                description: |
-                  "": queue/topic per table (see schema_table);
-                  ".{column}": queue per value of the column "id" in this table, the value type must be int;
-                  "{any_name}": global queue i.e. multiple tables can share the same queue/topic
+                defaultValue: "''"
                 constraint:
-                  nullable: false
+                    nullable: false
+                description: "'': per table; '.column': per value; any other name: a shared global queue"
             - column:
                 name: priority
                 type: int
-                defaultValue: '1'
+                defaultValue: "1"
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: queue
                 type: bool
-                description: >
-                  if queue, then perform consequence events execution for the same topic.
-                  If set true then etcd message will delete automatically.
-                  Ex: if the "topic" is ".id" and not queue, then events for same row will execute in parallel
-                defaultValue: 'true'
+                defaultValue: "true"
                 constraint:
-                  nullable: false
+                    nullable: false
+                description: Execute consecutive events for the same topic in order
             - column:
                 name: cleanup_logs_min
                 type: int
-                description: >
-                  Cleanup rppd_function_log after certain minutes. Will execute only if fn_logging
-                defaultValue: '0'
+                defaultValue: "0"
                 constraint:
-                  nullable: false
+                    nullable: false
+                description: Purge rppd_function_log after N minutes; only if fn_logging
             - column:
                 name: fn_logging
                 type: bool
-                description: >
-                  Store logs to rppd_function_log on every function call.
-                  Otherwise no DB call for a function execution,
-                  But DB still available to perform SQL call from Python.
                 defaultValue: "false"
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: verbose_debug
                 type: bool
-                description: "Provide extra log message and errors"
                 defaultValue: "false"
                 constraint:
-                  nullable: false
+                    nullable: false
+            - column:
+                name: env
+                type: json
+            - column:
+                name: sign
+                type: json
 
-#  env json, -- reserved for future usage: db pool (read only)/config python param name prefix (mapping)
-#  sign json -- reserved for future usage: approve sign
+            # ── [rppd-git] where the body comes from ─────────────────────
+            #
+            # All nullable with no default, so every existing row keeps
+            # source_git NULL and stays exactly what it was: the feature is
+            # opt-in per function, not per cluster.
+            - column:
+                name: source_git
+                type: varchar(250)
+                description: Git repository URL holding this body. NULL keeps the pasted code authoritative.
+            - column:
+                name: source_git_ref
+                type: varchar(250)
+                description: >
+                    Branch, tag or commit. NULL means the remote HEAD - a MOVING
+                    target, so pin it for anything that matters. Sized like a
+                    path, not a name: refs carry slashes and run long, and a
+                    truncated ref resolves to the wrong commit or to none.
+            - column:
+                name: source_git_dir
+                type: varchar(250)
+                description: Sub-directory inside the repository
+            - column:
+                name: source_git_file
+                type: varchar(250)
+                description: The python file holding the body. Required when source_git is set.
+            - column:
+                name: source_git_depth
+                type: int
+                description: Shallow clone depth; 0 fetches full history
+            - column:
+                name: source_secret_name
+                type: varchar(80)
+                description: >
+                    NAME of the KV entry holding credentials for the source.
+                    Never a value: this table replicates to every node, so a
+                    password written here is published cluster-wide.
+            - column:
+                name: script_tag
+                type: varchar(80)
+                description: Short commit the current code was installed from. Written by the cluster, not by hand.
+
+            # ── [rppd-git] which schema the body needs ───────────────────
+            - column:
+                name: min_schema_version
+                type: varchar(80)
+                description: >
+                    Lowest rdbm schema version this body runs against, checked
+                    against what the WHOLE cluster has deployed before install.
+                    Unmet means not installed, with the reason in `error`.
+            - column:
+                name: schema_git_tag
+                type: varchar(80)
+                description: The exact rdbm schema revision this body was written against. A tag is identity, not ordering.
+            - column:
+                name: error
+                type: text
+                description: Why this function was last held back or failed to install. NULL when installed.
+
+      # ── execution log ────────────────────────────────────────────────────
           triggers:
             - trigger:
-                name: _rppd_function_event
-                event: AFTER INSERT OR UPDATE OR DELETE
+                name: "@extschema@_rppd_function_event"
+                event: after insert or update or delete
                 when: for each row
-                proc: rppd_event()
-
-#  select nextval('rppd_function_log_id_seq'::regclass); -- start log id from above 0, see ".id > 0"
-
-
+                proc: "@extschema@.rppd_event()"
       - table:
           tableName: rppd_function_log
-          description: "Python function code execution results for a tracking consistency, durability and cadence"
+          description: One row per function call, when fn_logging is set
           columns:
             - column:
                 name: id
                 type: bigserial
                 constraint:
-                  primaryKey: true
+                    primaryKey: true
+                    nullable: false
             - column:
                 name: node_id
                 type: int
-                description: "The rppd_config.id as a reference to execution node"
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: fn_id
                 type: int
-                description: The rppd_function.id, but no FK to keep performance
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: trig_value
                 type: json
-                description: >
-                  The value of column to trigger if topic is ".{column}".
-                  Use stored value to load on restore queue on startup and continue.
-                  Must be column type int to continue otherwise will save null and not able to restore.
             - column:
                 name: trig_type
                 type: int
-                defaultValue: '0'
-                description: "Type of event: Update = 0, Insert = 1, Delete = 2, Truncate = 3"
+                defaultValue: "0"
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: started_at
                 type: timestamptz
                 defaultValue: current_timestamp
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: took_ms
                 type: bigint
-                description: "The rppd_function running time in milliseconds or NULL if it is not finished"
-            - column:
-                name: error_msg
-                type: text
-                description: "The error messages includes function init on connect"
             - column:
                 name: output
                 type: text
-                description: "The stdout from python functions"
+            - column:
+                name: error_msg
+                type: text
 
-
+      # ── scheduled functions ──────────────────────────────────────────────
+          triggers:
+            - trigger:
+                name: "@extschema@_rppd_function_log_event"
+                event: after insert or update or delete
+                when: for each row
+                proc: "@extschema@.rppd_event()"
       - table:
           tableName: rppd_cron
-          description: "Periodic function python trigger schedule and cadence"
+          description: Recurring invocations of a function
           columns:
             - column:
                 name: id
                 type: serial
                 constraint:
-                  primaryKey: true
+                    primaryKey: true
+                    nullable: false
             - column:
                 name: fn_id
                 type: int
-                description: >
-                  The table reference to the function configuration.
-                  The topic in this function must be a column to increment on periodic event fire
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: cron
                 type: varchar(64)
-                description: "The schedule see https://en.wikipedia.org/wiki/Cron , Please adjust timeout accordingly."
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: column_name
                 type: varchar(64)
-                description: "The column in target table to update"
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: column_value
                 type: text
-                description: "The column SQL value in target table to update"
             - column:
                 name: cadence
                 type: bool
-                default: "false"
-                description: >
-                  The flag indicate to run this cron job only if the function was not started by cron defined.
-                  Required a rppd_function_log i.e. cleanup_logs_min > 0
+                defaultValue: "false"
                 constraint:
-                  nullable: false
+                    nullable: false
             - column:
                 name: timeout_sec
                 type: int
-                description: >
-                  The if the finished_at is not null but started_at.
-                  If started_at is null, the function never started yet
-                constraint:
-                  nullable: false
             - column:
                 name: finished_at
                 type: timestamptz
-                description: >
-                  The function wont start if finished_at is null, except timeout.
-                  If started_at is null, the function never started yet
-                constraint:
-                  nullable: false
             - column:
                 name: started_at
                 type: timestamptz
-                description: ''
-                constraint:
-                  nullable: false
             - column:
                 name: error_msg
                 type: text
-                description: ''
-                constraint:
-                  nullable: false
-
           triggers:
             - trigger:
-                name: _rppd_cron_event
-                event: AFTER INSERT OR UPDATE OR DELETE
+                name: "@extschema@_rppd_cron_event"
+                event: after insert or update or delete
                 when: for each row
-                proc: rppd_event()
-
-
-#  CREATE TRIGGER @extschema@_rppd_cron_event_up AFTER UPDATE OF id, fn_id, cron, column_name, column_value, cadence, timeout_sec
-#  ON @extschema@.rppd_cron FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
-#
-#  comment on function @extschema@.rppd_info(node_id integer) is 'Return node status in json format by node_id from rppd_config.id table';
-#  comment on function @extschema@.rppd_info(cfg text) is 'Use the config table name: The name includes schema, i.e.: schema.table. Default is "public.rppd_config". if ".<table>" than default use schema is "public". if "<schema>." than default use table is "rppd_config"';
-#  comment on function @extschema@.rppd_info(node_id integer, fn_log_id bigint) is 'Same as node status plus function execution status by fn_log.id table';
-#  comment on function @extschema@.rppd_info(node_id integer, fn_log_uuid text) is 'Same as node status plus function execution status by uuid if not store to fn_log.id table. use * to get all uuid.';
+                proc: "@extschema@.rppd_event()"

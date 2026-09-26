@@ -1,4 +1,15 @@
 -- /*%LPH%*/
+--
+-- NOTE: the canonical definition of these tables is ../rppd.yaml, a SchemaGuard
+-- schema. This file is the pgrx/extension form of the same thing, embedded by
+-- `extension_sql_file!` so that CREATE EXTENSION keeps working unchanged.
+--
+-- Keep the two in step. The YAML is the one to edit: it states what should
+-- exist and SchemaGuard derives the DDL, including the ALTERs that a
+-- CREATE-only script cannot express - which is exactly how the git-source
+-- columns (source_git*, min_schema_version, schema_git_tag) came to be missing
+-- from installs made by this file.
+
 
 
 CREATE table if not exists @extschema@.rppd_config (

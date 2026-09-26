@@ -33,18 +33,18 @@ bb8-postgres = {version = "0.9.0", features = ["with-chrono-0_4","with-uuid-0_8"
 thiserror = "2"
 pyo3 = { version = "^0.29", features = ["auto-initialize", "uuid"] }
 
-etcds = {version = "0.17"}
-etcd-client = { version = "^0.19", optional = true}
+etcds = {version = "^0.20"}
+etcd-client = { version = "^0.20", optional = true}
 
 sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "chrono"] }
 
 rust-i18n = "4"
-cron-parser = "0.11"
-dns-lookup = "3.0"
+cron-parser = "0.12"
+dns-lookup = "4.0"
 shims = "0.1"
 rppd-common = {path = "../rppd-common"}
-opentelemetry_sdk = { version = "^0.32", features = ["rt-tokio", "trace"], optional = true }
-opentelemetry = { version = "^0.32", optional = true }
+opentelemetry_sdk = { version = "^0.33", features = ["rt-tokio", "trace"], optional = true }
+opentelemetry = { version = "^0.33", optional = true }
 
 
 [features]
