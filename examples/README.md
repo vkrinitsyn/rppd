@@ -1,6 +1,6 @@
 # Examples
 
-## etcd queue straight into ClickHouse — no Python, no PostgreSQL
+## etcd queue straight into ClickHouse - no Python, no PostgreSQL
 
 `etcd_ch_queue_test.py` needs only an etcd client. A queue named
 **`/q/ch:<table>/`** or **`/queue/clickhouse:<table>/`** is consumed by the etcd
@@ -37,7 +37,7 @@ INSERT ──on_commit_python──▶ fn1_src_to_queue.py ──etcd /q/──�
 
 `fn1_src_to_queue.py` reads the row it was notified about and puts it on the
 etcd queue. `fn2_queue_to_clickhouse.py` consumes the queue entry, reads live
-cluster status, and writes both through **`CH`** — the `clickhouse_connect`
+cluster status, and writes both through **`CH`** - the `clickhouse_connect`
 client bound alongside `DB` and `ETCD`.
 
 Full setup, the pgbench driver and measured results live in the `yt-cluster-tests`
@@ -52,13 +52,13 @@ misleading `[py] Internal error "not a master"`. Embedded in YT Cluster this is 
 maintained automatically: ytserv mirrors the cluster roster into the table each
 heartbeat and points `master` at the elected cluster leader, calling
 `set_master()` so the running instance follows a handover without a restart.
-Standalone, set it yourself — the column is `bool unique`, so exactly one row
+Standalone, set it yourself - the column is `bool unique`, so exactly one row
 may be true.
 
 **A read-only function must still end its transaction.** psycopg2 opens one on
 the first `execute`, and rppd reuses the connection across calls, so without a
 `DB.commit()` (or `rollback()`) the backend sits `idle in transaction` holding
-ACCESS SHARE on whatever it read — enough to block `TRUNCATE` or DDL on that
+ACCESS SHARE on whatever it read - enough to block `TRUNCATE` or DDL on that
 table indefinitely. Both examples commit after reading.
 
 **Under YT Cluster, `yt_info()` returns JSON, not a record set.** So this fails:
@@ -80,7 +80,7 @@ SELECT e->>'name', e->>'value' FROM json_array_elements(yt_info('E')) e
 sends `None`, which picks the next queued item. Both paths that shelve an event
 because the context pool is at capacity returned without putting a token back,
 so each such event destroyed one. Once the in-flight work drained, the count hit
-zero and the node stopped executing while its queue still held work — until a
+zero and the node stopped executing while its queue still held work - until a
 restart, which is why the first runs after a restart always looked healthy.
 `respawn_drive()` now guarantees one comes back, with a single outstanding retry
 so a burst of shelved events is not a burst of wake-ups.
@@ -92,7 +92,7 @@ that return contexts and send the next token, the gRPC server, and anything else
 sharing the runtime. Now wrapped in `tokio::task::block_in_place`.
 
 Worth knowing if you embed rppd: it is easy to read the symptom as a queue or
-delivery problem. It is not — throughput simply tracks `max_db_connections` and
+delivery problem. It is not - throughput simply tracks `max_db_connections` and
 then stops.
 
 ## Verified
