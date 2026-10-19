@@ -23,8 +23,19 @@ mod py;
 
 mod rd_rpc;
 mod cron;
+mod cadence;
+mod breaker;
+mod rd_breaker;
+mod shaper;
+mod rd_shaper;
+#[cfg(feature = "tracer")]
+mod metrics;
+#[cfg(feature = "tracer")]
+mod trace;
+mod schema;
 mod rd_monitor;
 mod rd_etcd;
+pub mod router; // [db-tag] one rppd per database behind one port
 
 // re export for use in lib integration
 pub use rppd_common::protogen::rppc::DbEventRequest;
@@ -48,6 +59,14 @@ const SG: &str = include_str!("../../rppd.yaml");
 /// use entered_schema.rppd_function to complete a RPPD instance configuration
 pub fn get_schema_def(schema: &str) -> String {
     SG.replace("@extschema@", schema)
+}
+
+/// [rppd-tables] rppd's tables created where they are missing, by SchemaGuard over
+/// rppd.yaml - tables and columns, never a trigger (`rppd_event()` is rppd's own
+/// extension's). ytserv calls it for its catalog and each database of C `rppd_dbs`
+/// (yt-pgxt combined-config.md D11). The number of changes made.
+pub async fn ensure_schema(db_url: &str, schema: &str) -> Result<usize, String> {
+    schema::migrate(db_url, schema).await
 }
 
 impl RppdNodeCluster {
@@ -109,13 +128,47 @@ impl RppdNodeCluster {
     
     /// Follow an external leader election.
     ///
-    /// Embedded in a cluster that already elects a leader (yaxaha), rppd must
+    /// Embedded in a cluster that already elects a leader (YT Cluster), rppd must
     /// not run an election of its own: the node the cluster made leader is the
     /// node that should execute functions. The embedder calls this whenever the
     /// leader changes, having already pointed `rppd_config.master` at that node.
     /// Returns true when the flag actually changed.
+    /// [db-tag] Stop this instance - its database has no function left (yt-pgxt
+    /// combined-config.md D11): it runs nothing, its queues are no longer watched and
+    /// its monitor ends; what it holds is dropped with its last handle.
+    pub async fn stop(&self) {
+        self.stopped.store(true, Ordering::Relaxed);
+        self.master.store(false, Ordering::Relaxed);
+        let ws: Vec<_> = self.watchers.write().await.drain().collect();
+        for (q, w) in ws {
+            #[allow(unused_mut)]
+            let mut w = w;
+            if let Err(e) = w.cancel().await {
+                slog::warn!(self.log, "{}stop: the watcher of {} not cancelled: {}", LP, q, e);
+            }
+        }
+        slog::info!(self.log, "{}stopped", LP);
+    }
+
+    /// [db-tag] A request to a peer, carrying this instance's database when it is a
+    /// tagged one - the peer's router hands it to that database's instance
+    pub(crate) async fn peer<T>(&self, m: T) -> tonic::Request<T> {
+        let mut r = tonic::Request::new(m);
+        let tag = self.cfg.read().await.db_tag.clone();
+        if !tag.is_empty() {
+            if let Ok(v) = tag.parse() {
+                r.metadata_mut().insert(router::DB_HEADER, v);
+            }
+        }
+        r
+    }
+
     pub async fn set_master(&self, master: bool) -> bool {
         let was = self.master.swap(master, Ordering::Relaxed);
+        if master && !was {
+            // [cadence] a new term: what this node evaluated before is stale now
+            self.master_epoch.fetch_add(1, Ordering::Relaxed);
+        }
         if was != master {
             info!(self.log, "{}master follows cluster leader: {} -> {}", LP, was, master);
         }
@@ -135,7 +188,7 @@ impl RppdNodeCluster {
             for (k, n) in nodes.iter() {
                 if k != &node_id { // in case of self link
                     if let Ok(node) = n {
-                        if let Ok(x) = node.lock().await.switch(SwitchRequest { node_id }).await {
+                        if let Ok(x) = node.lock().await.switch(self.peer(SwitchRequest { node_id }).await).await {
                             info!(self.log, "{} {:?}", t!("rppd-switch", from = node_id.to_string(), to = k.to_string()), x);
                             break;
                         }

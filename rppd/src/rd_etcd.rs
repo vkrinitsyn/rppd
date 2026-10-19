@@ -10,7 +10,8 @@ use etcds::{
         kv_server::Kv,
         watch_request,
         WatchCancelRequest,
-        WatchCreateRequest
+        WatchCreateRequest,
+        PutRequest,
     },
     cluster::EtcdNode,
 };
@@ -136,6 +137,26 @@ impl EtcdConnector {
         }
     }
 
+    /// [cadence] Put a message on a queue: `key` is a producer key, `<q>/producer/<id>`.
+    #[cfg(not(feature = "etcd-external"))]
+    pub(crate) async fn put(&mut self, key: &String, value: Vec<u8>) -> Result<(), String> {
+        match &self.etcd {
+            Ok(etcd) => etcd.put(Request::new(PutRequest {
+                key: key.clone().into_bytes(), value, ..Default::default()
+            })).await.map(|_| ()).map_err(|e| e.to_string()),
+            Err(e) => Err(format!("etcd is not ready: {}", e)),
+        }
+    }
+
+    /// [cadence] Put a message on a queue of an external etcd.
+    #[cfg(feature = "etcd-external")]
+    pub(crate) async fn put(&mut self, key: &String, value: Vec<u8>) -> Result<(), String> {
+        match &mut self.etcd {
+            Ok(etcd) => etcd.put(key.clone(), value, None).await.map(|_| ()).map_err(|e| e.to_string()),
+            Err(e) => Err(format!("etcd is not ready: {}", e)),
+        }
+    }
+
     /// Asknoledge the message receiving by deleting key from etcd queue.
     /// There is no queue in external i.e. no asknoledge required
     #[cfg(not(feature = "etcd-external"))]
@@ -196,7 +217,9 @@ impl RpFn {
 
         let queue_name = new_name.unwrap_or(&self.schema_table).to_owned();
         let client_id = con.client_id.clone();
-        let queue_consumer_name = format!("{}/consumer/{}", queue_name, &client_id.as_hyphenated());
+        // [db-tag] the queue in this instance's namespace; the watcher is kept by its name
+        let queue_consumer_name = format!("{}/consumer/{}", cluster.cfg.read().await.qkey(&queue_name),
+            &client_id.as_hyphenated());
         match &mut con.etcd {
             Ok(etcd) => {
                 let sender = cluster.kv_sender.clone();
@@ -208,7 +231,14 @@ impl RpFn {
 
                     match request_sender.send(WatchRequest {
                         request_union: Some(watch_request::RequestUnion::CreateRequest(
-                            WatchCreateRequest { key: queue_consumer_name.into_bytes(), ..Default::default() }
+                            // [watch-id] One id per queue. The embedded etcd keys a client's
+                            // watchers by watch_id and takes 0 literally - not as "assign one",
+                            // as etcd does - so every queue after the first was refused with
+                            // "Watcher#0 already on <the first queue>" and only one queue per
+                            // node was ever consumed (topology 92c: /q/cad_watch and
+                            // /q/cad_deadline never delivered).
+                            WatchCreateRequest { key: queue_consumer_name.into_bytes(),
+                                watch_id: next_watch_id(), ..Default::default() }
                         ))
                     }).await {
                         Ok(()) => {
@@ -236,6 +266,9 @@ impl RpFn {
                                                                     if let Err(e) = sender.send(MessageRequest {
                                                                         key: String::from_utf8_lossy(&kv.key).to_string(),
                                                                         value: kv.value.to_vec(),
+                                                                        // [otel] etcds' KeyValue carries no trace (its proto
+                                                                        // dropped the field): the message's trace is not continued
+                                                                        traceparent: String::new(),
                                                                     }).await {
                                                                         error!(log, "{}can't consume watcher notivy for {} Etcd watcher failed: {}", LP, queue_name, e);
                                                                     }
@@ -286,6 +319,8 @@ impl RpFn {
                                                 if let Err(e) = sender.send(MessageRequest {
                                                     key: kv.key_str().unwrap_or("").to_string(),
                                                     value: kv.value().to_vec(),
+                                                    // an external etcd keeps no trace with a message
+                                                    traceparent: String::new(),
                                                 }).await {
                                                     error!(log, "{}can't notify watcher for {} Etcd reply: {}", LP, queue_name, e);
                                                 }
@@ -320,7 +355,7 @@ impl RpFn {
 
 #[cfg(not(feature = "etcd-external"))]
 impl WatcherW {
-    async fn cancel(&self) -> Result<(), SendError<WatchRequest>> {
+    pub(crate) async fn cancel(&self) -> Result<(), SendError<WatchRequest>> {
         self.sender.send(
             WatchRequest{ request_union: Some(
                 watch_request::RequestUnion::CancelRequest(
@@ -332,7 +367,15 @@ impl WatcherW {
 
 #[cfg(feature = "etcd-external")]
 impl WatcherW {
-    async fn cancel(&mut self) -> Result<(), etcd_client::Error> {
+    pub(crate) async fn cancel(&mut self) -> Result<(), etcd_client::Error> {
         self.sender.cancel(self.watch_id).await
     }
+}
+
+/// [watch-id] A process-wide counter: watch ids must differ per client, and every
+/// queue of this node watches as the same client.
+#[cfg(not(feature = "etcd-external"))]
+fn next_watch_id() -> i64 {
+    static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }

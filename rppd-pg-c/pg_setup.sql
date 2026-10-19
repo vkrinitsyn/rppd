@@ -45,7 +45,8 @@ CREATE table if not exists @extschema@.rppd_function (
     fn_logging bool not null default false,
     verbose_debug bool not null default false,
     env json, -- reserved for future usage: db pool (read only)/config python param name prefix (mapping)
-    sign json -- reserved for future usage: approve sign
+    sign json, -- reserved for future usage: approve sign
+    secret_names text -- [skv] the host's secret store names this function may read as SECRET (rppd.yaml)
 );
 
 select nextval('rppd_function_log_id_seq'::regclass); -- start log id from above 0, see ".id > 0"
@@ -96,15 +97,44 @@ CREATE table if not exists @extschema@.rppd_cron (
     timeout_sec int,
     finished_at timestamptz,
     started_at timestamptz,
-    error_msg text
+    error_msg text,
+    -- [cadence] a row with cadence = true watches a pipeline process: see rppd README
+    watch_min int not null default 0,
+    retry_sec int not null default 0,
+    watch_q varchar(256),
+    deadline_q varchar(256),
+    state varchar(16) not null default 'ok',
+    last_seen timestamptz,
+    since timestamptz,
+    attempt int not null default 0
 );
+
+-- [cadence] an existing table gets the cadence columns (rppd adds them itself at startup too)
+ALTER TABLE @extschema@.rppd_cron
+    ADD COLUMN IF NOT EXISTS watch_min int not null default 0,
+    ADD COLUMN IF NOT EXISTS retry_sec int not null default 0,
+    ADD COLUMN IF NOT EXISTS watch_q varchar(256),
+    ADD COLUMN IF NOT EXISTS deadline_q varchar(256),
+    ADD COLUMN IF NOT EXISTS state varchar(16) not null default 'ok',
+    ADD COLUMN IF NOT EXISTS last_seen timestamptz,
+    ADD COLUMN IF NOT EXISTS since timestamptz,
+    ADD COLUMN IF NOT EXISTS attempt int not null default 0;
+
 
 comment on table @extschema@.rppd_cron is 'Periodic function python trigger schedule and cadence';
 comment on column @extschema@.rppd_cron.fn_id is 'The table reference to the function configuration. The topic in this function must be a column to increment on periodic event fire';
 comment on column @extschema@.rppd_cron.cron is 'The schedule see https://en.wikipedia.org/wiki/Cron , Please adjust timeout accordingly.';
 comment on column @extschema@.rppd_cron.column_name is 'The column in target table to update';
 comment on column @extschema@.rppd_cron.column_value is 'The column SQL value in target table to update';
-comment on column @extschema@.rppd_cron.cadence is 'The flag indicate to run this cron job only if the function was not started by cron defined. Required a rppd_function_log i.e. cleanup_logs_min > 0';
+comment on column @extschema@.rppd_cron.cadence is 'true: the row watches a pipeline process (pp) instead of scheduling a job. fn_id names the function consuming the pp queue (its schema_table is a /q/ path); cron is the EXPECTED cadence - a message is due by the end of the first full cron period after the last one seen. Missed: state watch and a message to watch_q (repeated every retry_sec), after watch_min the state deadline and one message to deadline_q; the next message: state ok and an ok message to the queue of the state left';
+comment on column @extschema@.rppd_cron.watch_min is 'cadence: minutes on watch before the deadline; 0 = the deadline message at once';
+comment on column @extschema@.rppd_cron.retry_sec is 'cadence: the watch message repeats every retry_sec seconds while on watch; 0 = once';
+comment on column @extschema@.rppd_cron.watch_q is 'cadence: the /q/ queue the watch and its ok messages go to; null = none';
+comment on column @extschema@.rppd_cron.deadline_q is 'cadence: the /q/ queue the deadline and its ok messages go to; null = none';
+comment on column @extschema@.rppd_cron.state is 'cadence, kept by rppd: ok | watch | deadline';
+comment on column @extschema@.rppd_cron.last_seen is 'cadence, kept by rppd: the last message seen on the pp queue';
+comment on column @extschema@.rppd_cron.since is 'cadence, kept by rppd: when the current state was entered';
+comment on column @extschema@.rppd_cron.attempt is 'cadence, kept by rppd: watch messages sent in this watch';
 comment on column @extschema@.rppd_cron.finished_at is 'The function wont start if finished_at is null, except timeout. If started_at is null, the function never started yet';
 comment on column @extschema@.rppd_cron.timeout is 'The if the finished_at is not null but started_at . If started_at is null, the function never started yet';
 
@@ -112,7 +142,7 @@ comment on column @extschema@.rppd_cron.timeout is 'The if the finished_at is no
 CREATE TRIGGER @extschema@_rppd_cron_event AFTER INSERT OR DELETE ON
     @extschema@.rppd_cron FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
 
-CREATE TRIGGER @extschema@_rppd_cron_event_up AFTER UPDATE OF id, fn_id, cron, column_name, column_value, cadence, timeout_sec
+CREATE TRIGGER @extschema@_rppd_cron_event_up AFTER UPDATE OF id, fn_id, cron, column_name, column_value, cadence, timeout_sec, watch_min, retry_sec, watch_q, deadline_q
     ON @extschema@.rppd_cron FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
 
 comment on function @extschema@.rppd_info(node_id integer) is 'Return node status in json format by node_id from rppd_config.id table';

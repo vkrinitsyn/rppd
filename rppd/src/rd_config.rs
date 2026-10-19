@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -116,6 +116,9 @@ pub struct RppdNodeCluster {
     pub(crate) cfg_db: bool,
     /// is the instance play master, receive trigger calls, schedule and call others
     pub(crate) master: Arc<AtomicBool>,
+    /// [cadence] bumped on every promotion to master (`set_master`): runtimes kept
+    /// from an earlier term are dropped, see `CronContext::new_term`
+    pub(crate) master_epoch: Arc<AtomicU64>,
     /// is the node loaded all logs
     pub(crate) started: Arc<AtomicBool>,
     pub(crate) node_id: Arc<AtomicI32>,
@@ -128,6 +131,9 @@ pub struct RppdNodeCluster {
     pub(crate) running: Arc<AtomicI32>,
     /// a delayed "pick the next queued event" is already scheduled, see respawn_drive()
     retry_pending: Arc<AtomicBool>,
+    /// [db-tag] stopped by its embedder (`stop`): the monitor ends, the queues are
+    /// no longer watched, nothing is run
+    pub(crate) stopped: Arc<AtomicBool>,
 
     /// postgres connection pool use by sqlx on init
     pub(crate) db: Pool<Postgres>,
@@ -179,7 +185,20 @@ pub struct RppdNodeCluster {
     pub(crate) queue: Arc<RwLock<QueueType>>,
 
     pub(crate) cron: Arc<RwLock<CronContext>>,
+    /// [cadence] arrivals per queue on this node
+    pub(crate) cadence_seen: Arc<std::sync::Mutex<crate::cadence::SeenMap>>,
     pub(crate) etcd: Arc<RwLock<EtcdConnector>>,
+    /// [breaker] each function's breaker on this node and the events it holds
+    /// (rd_breaker.rs); a plain mutex, never held across an await
+    pub(crate) breakers: Arc<std::sync::Mutex<crate::rd_breaker::Breakers>>,
+    /// [breaker] rppd_function_state exists: transitions are stored there
+    pub(crate) breaker_store: Arc<AtomicBool>,
+    /// [shaper] each function's shaper on this node and the calls waiting for a
+    /// slot (rd_shaper.rs); a plain mutex, never held across an await
+    pub(crate) shapers: Arc<std::sync::Mutex<crate::rd_shaper::Shapers>>,
+    /// [otel] rppd's instruments, on the host's meter (metrics.rs)
+    #[cfg(feature = "tracer")]
+    pub(crate) metrics: Arc<std::sync::RwLock<Option<crate::metrics::Instruments>>>,
     pub(crate) log: Logger,
     #[cfg(feature = "tracer")] pub(crate) tracer: Arc<RwLock<Option<SdkTracer>>>,
 }
@@ -195,6 +214,34 @@ pub(crate) struct  WatcherW {
     pub(crate) watch_id: etcds::cluster::WatcherId,
 }
 
+/// [routing] The functions an event on `table` fires: that table's OWN
+/// functions, no others.
+///
+/// `fn_id` is keyed by topic, and a topic is an ORDERING key - '' a line per
+/// table, '.col' a line per value, a name one line shared by several tables -
+/// never a subscription. Taking every function of each of the table's topics
+/// therefore also fired every OTHER table's function with the same topic, and
+/// with the default '' that is every function there is: one message on
+/// `/q/cad_deadline` ran the `/q/cad_watch` observer too (topology 92c - an
+/// 'ok' sent to the deadline queue was counted on the watch queue as well),
+/// and every queue message ran all seven of that test's functions.
+pub(crate) fn own_fns(table: &str, topics: &HashSet<TopicType>,
+                      by_topic: &HashMap<TopicType, BTreeSet<RpFnId>>,
+                      fns: &BTreeMap<i32, RpFn>) -> BTreeMap<i32, RpFnId> {
+    let mut fn_ids = BTreeMap::new();
+    for topic in topics {
+        if let Some(t) = by_topic.get(topic) {
+            for fid in t {
+                // also drops an id left in `fn_id` after its function was removed
+                if fns.get(&fid.id).map(|f| f.schema_table == table).unwrap_or(false) {
+                    fn_ids.insert(fid.id, fid.clone());
+                }
+            }
+        }
+    }
+    fn_ids
+}
+
 #[inline]
 fn make_sql_cnd(input: &Vec<PkColumn>) -> String {
     let mut sql = String::new();
@@ -204,9 +251,19 @@ fn make_sql_cnd(input: &Vec<PkColumn>) -> String {
     }
     sql
 }
+/// [skv] The host's opener for its secret store (ytserv skv-secrets.md, P6): a
+/// secret's name -> its value, in-process. Given to rppd as a handle, the way the
+/// tracer is; a function reaches it as `SECRET`, for the names it lists in
+/// `rppd_function.secret_names` only (py.rs).
+pub type SecretOpener = std::sync::Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>;
+
 pub enum ConfigurationRequest {
     #[cfg(feature = "tracer")] Tracer(Option<SdkTracer>),
+    /// [otel] the host's meter for rppd's instruments (metrics.rs); `None` takes them away
+    #[cfg(feature = "tracer")] Meter(Option<opentelemetry::metrics::Meter>),
     Config(RppdConfig),
+    /// [skv] the secret store's opener; `None` takes it away
+    Secrets(Option<SecretOpener>),
 }
 
 impl RppdNodeCluster {
@@ -220,9 +277,15 @@ impl RppdNodeCluster {
             ConfigurationRequest::Tracer(t) => {
                 *self.tracer.write().await = t;
             }
+            #[cfg(feature = "tracer")]
+            ConfigurationRequest::Meter(m) => {
+                let i = m.as_ref().map(|m| crate::metrics::Instruments::new(m, self));
+                if let Ok(mut g) = self.metrics.write() { *g = i; }
+            }
             ConfigurationRequest::Config(cfg) => {
                 *self.cfg.write().await = cfg;
             }
+            ConfigurationRequest::Secrets(o) => crate::py::set_secret_opener(o),
         }
         Ok(())
     }
@@ -289,7 +352,12 @@ impl RppdNodeCluster {
     /// load all or reload one or remove one function, include load/remove fs_logs
     #[inline]
     pub(crate) async fn reload_fs(&self, x: &Option<DbEventRequest>) -> Result<(), String> {
-        let sql = SELECT_FN.replace("%SCHEMA%", self.cfg.read().await.schema.as_str());
+        let schema = self.cfg.read().await.schema.clone();
+        // [skv], [breaker] the optional columns, where the table has them (SELECT_FN)
+        let has: HashSet<String> = sqlx::query_scalar::<_, String>("select column_name::text from information_schema.columns \
+            where table_schema = $1 and table_name = 'rppd_function'")
+            .bind(&schema).fetch_all(&self.db()).await.unwrap_or_default().into_iter().collect();
+        let sql = select_fn(schema.as_str(), &has);
         let sql = if x.is_none() || x.as_ref().unwrap().pks.len() == 0 { sql } else {
             format!("{} where {}", sql, make_sql_cnd(&x.as_ref().unwrap().pks))
         };
@@ -363,6 +431,8 @@ impl RppdNodeCluster {
             .max_connections(1)  // use only on init
             .connect(c.db_url().as_str()).await
             .map_err(|e| format!("Connection error to: {} {}", c.db_url(), e))?;
+        // [breaker] an installed rppd's tables brought up to date from rppd.yaml
+        crate::schema::upgrade(&pool, c.db_url().as_str(), c.schema.as_str(), &log).await;
         // getting cluster
         let mut nodes = BTreeMap::new();
         let mut node_connections = BTreeMap::new();
@@ -425,6 +495,7 @@ impl RppdNodeCluster {
             cfg: Arc::new(RwLock::new(c)),
             cfg_db: cfg_db,
             master: Arc::new(AtomicBool::new(false)),
+            master_epoch: Arc::new(AtomicU64::new(0)),
             started: Arc::new(AtomicBool::new(false)),
             node_id: Arc::new(AtomicI32::new(id)),
             master_id: Arc::new(AtomicI32::new(master_id)),
@@ -432,6 +503,7 @@ impl RppdNodeCluster {
             max_context: Arc::new(AtomicU16::new(0)),
             running: Arc::new(AtomicI32::new(0)),
             retry_pending: Arc::new(AtomicBool::new(false)),
+            stopped: Arc::new(AtomicBool::new(false)),
             db: pool,
             nodes: Arc::new(RwLock::new(nodes)),
             stat: Arc::new(RwLock::new(ClusterStat::default())),
@@ -448,8 +520,17 @@ impl RppdNodeCluster {
                 crons: BTreeMap::new(),
                 jobs: BTreeMap::new(),
                 log: log.clone(),
+                started: chrono::Utc::now(),
+                cadence_on: false,
+                cadence_epoch: 0,
             })),
+            cadence_seen: Arc::new(std::sync::Mutex::new(Default::default())),
             etcd: Arc::new(RwLock::new(etcd)),
+            breakers: Arc::new(std::sync::Mutex::new(Default::default())),
+            breaker_store: Arc::new(AtomicBool::new(false)),
+            shapers: Arc::new(std::sync::Mutex::new(Default::default())),
+            #[cfg(feature = "tracer")]
+            metrics: Arc::new(std::sync::RwLock::new(None)),
             kv_sender,
             event,
             watchers: Arc::new(Default::default()),
@@ -524,7 +605,7 @@ impl RppdNodeCluster {
     ///
     /// Only one retry is kept outstanding, so a burst of shelved events does not
     /// turn into a burst of wake-ups.
-    fn respawn_drive(&self) {
+    pub(crate) fn respawn_drive(&self) {
         if self.retry_pending.swap(true, Ordering::Relaxed) {
             return; // one is already on its way
         }
@@ -558,18 +639,16 @@ impl RppdNodeCluster {
     }
 
     pub(crate) async fn check_fn(&self, table_name: &String) -> BTreeMap<i32, RpFnId> {
-        let mut fn_ids = BTreeMap::new();
-        if let Some(topics) = self.fn_tt.read().await.get(table_name) {
-            trace!(self.log, "found topics [{:?}] for {}", topics, table_name);
-            for topic in topics {
-                if let Some(t) = self.fn_id.read().await.get(topic) {
-                    for fid in t {
-                        fn_ids.insert(fid.id, fid.clone());
-                    }
-                }
-            }
+        // fns first: reload_fs and merge write fn_tt/fn_id only while holding
+        // fns for write, so this order cannot deadlock against them
+        let fns = self.fns.read().await;
+        let topics = match self.fn_tt.read().await.get(table_name) {
+            Some(t) => t.clone(),
+            None => return BTreeMap::new(),
         };
-        fn_ids
+        trace!(self.log, "found topics [{:?}] for {}", topics, table_name);
+        let by_topic = self.fn_id.read().await;
+        own_fns(table_name, &topics, &by_topic, &fns)
     }
 
     /// find topic, fnb_id and node_id by table
@@ -580,7 +659,8 @@ impl RppdNodeCluster {
                                 fn_ids: BTreeMap<i32, RpFnId>,
                                 pks: &Vec<PkColumn>,
                                 event: DbAction,
-                                value: &Option<(String, Vec<u8>)>
+                                value: &Option<(String, Vec<u8>)>,
+                                traceparent: &str,
     ) -> Result<ScheduleResult, String>
     {
         debug_assert!(fn_ids.len() > 0);
@@ -617,6 +697,10 @@ impl RppdNodeCluster {
                         key: value.as_ref().map(|(k, _)| k.clone()), // None for db trigger, one
                         value: value.as_ref().map(|(_, v)| v.clone()), // None for db trigger, one
                         rn_fn_id: Some(rn_fn_id.clone()),
+                        attempt: 0,
+                        shaped: false,
+                        parked: None,
+                        traceparent: Some(traceparent.to_string()).filter(|t| !t.is_empty()), // [otel]
                         trig_type: event as i32,
                         trig_value: Some(sqlx::types::Json::from(trig_value.clone())),
                         started_at: Utc::now(),
@@ -718,6 +802,8 @@ impl RppdNodeCluster {
 
         debug!(self.log, "{}loading functions", LP);
         let _ = self.reload_fs(&None).await?;
+        // [breaker] this node's open breakers as it left them
+        self.breaker_restore().await;
 
         // load messages to internal queue from fn_log, check timeout and execution status,
         for l in sqlx::query_as::<_, RpFnLog>(
@@ -755,11 +841,20 @@ impl RppdNodeCluster {
         };
 
         if f.took_ms.is_some() { // the function execution already completed
+            // [breaker] its line's in-progress mark goes first, then its breaker
+            // counts it and the event is acknowledged, retried or dead-lettered
+            let topic = self.fns.read().await.get(&f.fn_id).map(|fc| fc.to_topic(&f));
+            if let Some(topic) = topic {
+                self.queue.write().await.done(&f, topic);
+            }
+            self.breaker_done(&f).await;
+            // [shaper] a slot frees: the limit adapts, a waiting call goes
+            self.shaper_done(&f).await;
             if !self.master.load(Ordering::Relaxed) {
                 if let Some(node) = self.node_connections.read().await.get(&self.master_id.load(Ordering::Relaxed)) {
                     if let Ok(master) = node {
                         // notify master about completion of function execution and trigger to pick a next event in a queue
-                        let _ = master.lock().await.complete(StatusRequest {
+                        let _ = master.lock().await.complete(self.peer(StatusRequest {
                             config_schema_table: schema.clone(),
                             node_id: self.node_id.load(Ordering::Relaxed),
                             fn_log: Some(
@@ -769,7 +864,7 @@ impl RppdNodeCluster {
                                     status_request::FnLog::Uuid(f.uuid.unwrap_or(Uuid::new_v4()).to_string())
                                 }
                             ),
-                        }).await;
+                        }).await).await;
                     }
                 }
             }
@@ -786,6 +881,16 @@ impl RppdNodeCluster {
                 error!(self.log, "{}no function by id: {}", LP, f.fn_id);
             }
             Some(fc) => {
+                // [shaper] within the function's limit and rate cap, then [breaker]
+                // past its breaker - a call the breaker holds gives its slot back
+                let f = match self.shaper_gate(fc, f).await {
+                    Some(f) => f,
+                    None => return,
+                };
+                let f = match self.breaker_gate(fc, f).await {
+                    Some(f) => f,
+                    None => { self.shaper_undo(fc).await; return; }
+                };
                 let started = Instant::now();
 
                 let mut c = self.exec.write().await.pop_back();
@@ -801,6 +906,9 @@ impl RppdNodeCluster {
                     }
                 }
                 if c.is_none() && max_con_cfg <= self.max_context.load(Ordering::Relaxed) {
+                    self.breaker_undo(fc.id); // [breaker] not run after all
+                    self.shaper_undo(fc).await; // [shaper] its slot back; it asks again
+                    let f = RpFnLog { shaped: false, ..f };
                     let _ = self.queueing(f, true).await; // re-queing, put back to queue
                     self.respawn_drive(); // ...and come back for it
                     return;
@@ -811,6 +919,8 @@ impl RppdNodeCluster {
                             .map_err(|e| format!("connecting python to {}: {}", &db_url, e)) {
                             Ok(p) => p,
                             Err(e) => {
+                                self.breaker_undo(fc.id); // [breaker] not run after all
+                                self.shaper_undo(fc).await;
                                 f.update_err(e, self.db(), &schema, &self.log).await;
                                 return;
                             }
@@ -829,12 +939,15 @@ impl RppdNodeCluster {
                 let queue = self.sender.clone();
                 let fc = fc.clone();
                 let run = self.running.clone();
-                #[cfg(not(feature = "etcd-external"))]
-                let etcd = self.etcd.clone();
                 let log = self.log.clone();
                 let _name = fc.schema_table.clone();
+                // [otel] the call's span: a child of the trace its event continues (the
+                // committing transaction's), and TRACE in Python is the span's own
                 #[cfg(feature = "tracer")]
-                let mut s = self.tracer.read().await.as_ref().map(|t| t.start(_name));
+                let mut s = self.tracer.read().await.as_ref().map(|t| crate::trace::pp_span(t, _name, &f, fc.id,
+                    self.node_id.load(Ordering::Relaxed)));
+                #[cfg(feature = "tracer")]
+                let f = RpFnLog { traceparent: s.as_ref().and_then(crate::trace::traceparent_of).or(f.traceparent), ..f };
                 tokio::spawn(async move {
                     // invoke() runs the Python function SYNCHRONOUSLY. Calling it
                     // straight from an async task blocks a whole runtime worker
@@ -849,11 +962,8 @@ impl RppdNodeCluster {
                         tokio::task::block_in_place(|| ctx.invoke(&f, &fc))
                     };
 
-                    #[cfg(not(feature = "etcd-external"))]
-                    if let Some(key) = &f.key {
-                        etcd.read().await.aks(key).await;
-                    }
-
+                    // [breaker] the etcd message is acknowledged once the event is
+                    // done with (breaker_done): a retried one is not yet
                     match &r {
                         Ok(_) => debug!(log, "{}executed OK! {} {}", LP, fc.schema_table, fc.topic),
                         Err(e) => {
@@ -868,11 +978,17 @@ impl RppdNodeCluster {
                     
                     let sec = started.elapsed().as_millis() as i64;
                     #[cfg(feature = "tracer")] let _ = s.as_mut().map(|s| s.add_event("log", vec![]));
-                    f.update(sec, r, db, &schema, &log).await;
+                    if RppdNodeCluster::will_retry(&fc, &f, r.is_err()) {
+                        // [breaker] retried: the log row keeps took_ms null, so a
+                        // restart still has the event
+                        f.update_err(r.clone().err().unwrap_or_default(), db, &schema, &log).await;
+                    } else {
+                        f.update(sec, r.clone(), db, &schema, &log).await;
+                    }
                     exec.write().await.push_front(p);
                     run.fetch_sub(1, Ordering::Relaxed);
                     if let Err(e) =
-                        queue.send(Some(RpFnLog { took_ms: Some(sec), ..f })).await {
+                        queue.send(Some(RpFnLog { took_ms: Some(sec), error_msg: r.err(), ..f })).await {
                         warn!(log, "{}{}", LP, e);
                     }
                 });
@@ -909,7 +1025,7 @@ impl RppdNodeCluster {
                 Some(node_id) => if let Some(node) = self.node_connections.read().await.get(&node_id) {
                     if let Ok(node) = node {
                         let node_id = self.node_id.load(Ordering::Relaxed);
-                        match node.lock().await.event(l.to_event(tbl, node_id)).await {
+                        match node.lock().await.event(self.peer(l.to_event(tbl, node_id)).await).await {
                             Ok(_) => {}
                             Err(_) => {
                                 // TODO mark node fail
@@ -939,5 +1055,51 @@ mod tests {
         });
         assert_eq!(v, vec![3]);
         assert_eq!(cnt, 2);
+    }
+
+    fn f(id: i32, table: &str, topic: &str) -> super::RpFn {
+        super::RpFn { id, code: String::new(), checksum: String::new(), schema_table: table.to_string(),
+            topic: topic.to_string(), queue: true, cleanup_logs_min: 0, priority: 1,
+            fn_logging: false, verbose_debug: false, secret_names: None,
+            breaker_fails: 0, breaker_slow_ms: 0, breaker_open_sec: 30, breaker_open_max_sec: 900,
+            max_attempts: 0, notify_q: None, dlq: None,
+            max_parallel: 0, min_parallel: 1, target_ms: 0, rate_per_sec: 0, burst: 1, max_backlog: 0 }
+    }
+
+    /// the maps reload_fs builds: table -> topics, topic -> functions, id -> function
+    fn maps(list: &[super::RpFn]) -> (HashMap<String, HashSet<String>>, HashMap<String, BTreeSet<super::RpFnId>>, BTreeMap<i32, super::RpFn>) {
+        let (mut tt, mut ti, mut fns) = (HashMap::new(), HashMap::new(), BTreeMap::new());
+        for x in list {
+            tt.entry(x.schema_table.clone()).or_insert_with(HashSet::new).insert(x.topic.clone());
+            ti.entry(x.topic.clone()).or_insert_with(BTreeSet::new).insert(super::RpFnId::fromf(x));
+            fns.insert(x.id, x.clone());
+        }
+        (tt, ti, fns)
+    }
+
+    use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+    #[test]
+    fn an_event_fires_only_its_own_tables_functions() {
+        // topology 92c: seven functions, all on the default topic ''
+        let list = [f(9201, "/q/cad_pp", ""), f(9206, "/q/cad_watch", ""), f(9207, "/q/cad_deadline", ""),
+            f(9205, "public.cad_plain", ""), f(1, "public.a", "shared"), f(2, "public.b", "shared"),
+            f(3, "public.a", ".id")];
+        let (tt, ti, fns) = maps(&list);
+        let fire = |t: &str| super::own_fns(t, tt.get(t).unwrap(), &ti, &fns).keys().cloned().collect::<Vec<i32>>();
+        assert_eq!(fire("/q/cad_deadline"), vec![9207]);
+        assert_eq!(fire("/q/cad_watch"), vec![9206]);
+        assert_eq!(fire("/q/cad_pp"), vec![9201]);
+        // a shared named topic is one ordering line, not a fan-out across tables
+        assert_eq!(fire("public.a"), vec![1, 3]);
+        assert_eq!(fire("public.b"), vec![2]);
+    }
+
+    #[test]
+    fn a_removed_function_does_not_fire() {
+        let list = [f(1, "/q/a", ""), f(2, "/q/a", "")];
+        let (tt, ti, mut fns) = maps(&list);
+        fns.remove(&2); // reload_fs retains fns but leaves fn_id as it was
+        assert_eq!(super::own_fns("/q/a", tt.get("/q/a").unwrap(), &ti, &fns).len(), 1);
     }
 }

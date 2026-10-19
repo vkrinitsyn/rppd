@@ -30,9 +30,25 @@ impl QueueType {
                             }
                         }
                         line.push_back(PyCall::Local(l));
+                        return;
                     }
-                } // all other conditions handle by q.put_one()
+                }
             }
+            // [breaker] no line to return it to (the event never came through the
+            // queue, or its line was cleaned up): a new line, never a dropped event
+            let fid = f.clone();
+            self.put_one(l, topic, fid, true);
+        }
+    }
+
+    /// [breaker] An event finished: the in-progress mark it left on a `queue` line
+    /// goes, so the line's next event can run. Without this a queue line ran one
+    /// event and then held the rest forever.
+    pub(crate) fn done(&mut self, l: &RpFnLog, topic: TopicDef) {
+        let Some(f) = &l.fn_idp else { return };
+        let Some(line) = self.0.get_mut(&f.priority).and_then(|q| q.get_mut(&topic)) else { return };
+        if let Some(i) = line.iter().rposition(|c| matches!(c, PyCall::InProgressSaved(id, _) if *id == l.id)) {
+            line.remove(i);
         }
     }
 
@@ -79,7 +95,7 @@ impl QueueType {
                     _ => true,
                 } {
                     line.push_back(calls); // return unchanged
-                    break; // take next function topic
+                    continue; // [breaker] this line is busy: take the next topic, not the next priority
                 } else {
                     if let PyCall::Local(mut call) = calls {
                         if call.is_queue(false) {
@@ -204,6 +220,43 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    fn fid(id: i32) -> RpFnId {
+        RpFnId { id, queue: true, priority: 1, save: false, trig_value: false }
+    }
+    fn ev(id: i64, f: &RpFnId) -> RpFnLog {
+        RpFnLog { id, fn_idp: Some(f.clone()), ..RpFnLog::default() }
+    }
+
+    /// [breaker] a queue line runs its next event once the first is done, and a
+    /// line with an event in progress skips only itself, not the other topics
+    #[test]
+    fn a_queue_line_moves_on_when_done_and_a_busy_line_blocks_no_other() {
+        let (a, b) = (fid(1), fid(2));
+        let mut q: QueueType = Default::default();
+        q.put_one(ev(1, &a), "a".into(), a.clone(), false);
+        q.put_one(ev(2, &a), "a".into(), a.clone(), false);
+        q.put_one(ev(3, &b), "b".into(), b.clone(), false);
+        let mut got = vec![q.pick_one().unwrap().id, q.pick_one().unwrap().id];
+        got.sort();
+        assert_eq!(got, vec![1, 3], "line a busy did not stop line b");
+        assert!(q.pick_one().is_none(), "both lines have an event in progress");
+        q.done(&ev(1, &a), "a".into());
+        assert_eq!(q.pick_one().unwrap().id, 2);
+        q.done(&ev(2, &a), "a".into());
+        q.done(&ev(3, &b), "b".into());
+        assert!(q.pick_one().is_none());
+        assert_eq!(q.size(), (0, 0));
+    }
+
+    /// [breaker] an event returned to a line that no longer exists starts a new one
+    #[test]
+    fn an_event_returned_to_no_line_is_kept() {
+        let a = fid(1);
+        let mut q: QueueType = Default::default();
+        q.return_back(ev(7, &a), "x".into());
+        assert_eq!(q.pick_one().unwrap().id, 7);
+    }
 
     #[tokio::test]
     async fn test_p() {

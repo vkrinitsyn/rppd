@@ -18,7 +18,39 @@ use crate::py::PyCall;
 use crate::rd_config::{RppdNodeCluster, TopicType};
 use crate::LP;
 
-pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, fn_logging, verbose_debug from %SCHEMA%.rppd_function ";
+/// `%OPTIONAL%`: the columns of `OPTIONAL_FN_COLUMNS`, each read where the table
+/// has it and its default where it does not - they are declared in rppd.yaml
+/// (SchemaGuard adds them, schema.rs), but an install made by the extension's
+/// CREATE-only script, or by hand, may lack them, and a select naming a missing
+/// column would load no function at all (rd_config.rs `reload_fs`).
+pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, fn_logging, verbose_debug, %OPTIONAL% from %SCHEMA%.rppd_function ";
+
+/// (column, its value where the table lacks it): [skv] secret_names; [breaker] the
+/// breaker's settings, off by default
+pub(crate) const OPTIONAL_FN_COLUMNS: [(&str, &str); 14] = [
+    ("secret_names", "null::text"),
+    ("breaker_fails", "0"),
+    ("breaker_slow_ms", "0"),
+    ("breaker_open_sec", "30"),
+    ("breaker_open_max_sec", "900"),
+    ("max_attempts", "0"),
+    ("notify_q", "null::varchar"),
+    ("dlq", "null::varchar"),
+    ("max_parallel", "0"),
+    ("min_parallel", "1"),
+    ("target_ms", "0"),
+    ("rate_per_sec", "0"),
+    ("burst", "1"),
+    ("max_backlog", "0"),
+];
+
+/// SELECT_FN for a table with these columns
+pub(crate) fn select_fn(schema: &str, has: &HashSet<String>) -> String {
+    let optional: Vec<String> = OPTIONAL_FN_COLUMNS.iter()
+        .map(|(c, def)| if has.contains(*c) { c.to_string() } else { format!("{} as {}", def, c) })
+        .collect();
+    SELECT_FN.replace("%SCHEMA%", schema).replace("%OPTIONAL%", optional.join(", ").as_str())
+}
 
 /// Rust Python Function
 #[derive(sqlx::FromRow, Debug, Clone)]
@@ -43,6 +75,31 @@ pub struct RpFn {
     pub(crate) priority: i32,
     pub(crate) fn_logging: bool,
     pub(crate) verbose_debug: bool,
+    /// [skv] the secret store's names this function may open as `SECRET`,
+    /// separated by commas or whitespace (py.rs)
+    pub(crate) secret_names: Option<String>,
+    /// [breaker] failures in a row that open the breaker; 0 = none (breaker.rs)
+    pub(crate) breaker_fails: i32,
+    /// [breaker] a call slower than this counts as failed; 0 = off
+    pub(crate) breaker_slow_ms: i32,
+    pub(crate) breaker_open_sec: i32,
+    pub(crate) breaker_open_max_sec: i32,
+    /// [breaker] attempts per event before it is dead-lettered; 0 = no retry
+    pub(crate) max_attempts: i32,
+    /// [breaker] the breaker's transitions go to this /q/ queue
+    pub(crate) notify_q: Option<String>,
+    /// [breaker] events that failed max_attempts times go to this /q/ queue
+    pub(crate) dlq: Option<String>,
+    /// [shaper] the adaptive limit's ceiling; 0 = no shaping (shaper.rs)
+    pub(crate) max_parallel: i32,
+    pub(crate) min_parallel: i32,
+    /// [shaper] the latency target; 0 = learned
+    pub(crate) target_ms: i32,
+    /// [shaper] a hard cap of calls per second; 0 = none
+    pub(crate) rate_per_sec: i32,
+    pub(crate) burst: i32,
+    /// [shaper] waiting events over this send a backlog notice; 0 = none
+    pub(crate) max_backlog: i32,
     // env json, -- TODO reserved for future usage: db pool (read only)/config python param name prefix (mapping)
     // sign json -- TODO reserved for future usage: approve sign, required RSA private key on startup config
 
@@ -148,6 +205,14 @@ pub struct RpFnLog {
     pub(crate) value: Option<Vec<u8>>,
     #[sqlx(skip)] /// transient copy from RpFn
     pub(crate) rn_fn_id: Option<RpFnId>,
+    #[sqlx(skip)] /// [breaker] how many times this event has run and failed
+    pub(crate) attempt: u32,
+    #[sqlx(skip)] /// [shaper] released by the shaper with its slot already taken
+    pub(crate) shaped: bool,
+    #[sqlx(skip)] /// [otel] when the shaper parked it, for `rppd.shaper.wait`
+    pub(crate) parked: Option<Instant>,
+    #[sqlx(skip)] /// [otel] the trace this event continues: its producer's, then the call's own
+    pub(crate) traceparent: Option<String>,
 
     /// DbAction
     pub(crate) trig_type: i32,
@@ -170,6 +235,10 @@ impl Default for RpFnLog {
             key: None,
             value: None,
             rn_fn_id: None,
+            attempt: 0,
+            shaped: false,
+            parked: None,
+            traceparent: None,
             trig_type: 0,
             started_at: Utc::now(),
             output: None,
@@ -180,6 +249,28 @@ impl Default for RpFnLog {
 
 
 impl RpFn {
+    /// [breaker] this function's breaker settings
+    pub(crate) fn breaker_cfg(&self) -> crate::breaker::Cfg {
+        crate::breaker::Cfg {
+            fails: self.breaker_fails.max(0) as u32,
+            slow_ms: self.breaker_slow_ms.max(0) as u32,
+            open_sec: self.breaker_open_sec.max(1) as u32,
+            open_max_sec: self.breaker_open_max_sec.max(0) as u32,
+        }
+    }
+
+    /// [shaper] this function's shaper settings
+    pub(crate) fn shaper_cfg(&self) -> crate::shaper::Cfg {
+        crate::shaper::Cfg {
+            max_parallel: self.max_parallel.max(0) as u32,
+            min_parallel: self.min_parallel.max(1) as u32,
+            target_ms: self.target_ms.max(0) as u32,
+            rate_per_sec: self.rate_per_sec.max(0) as u32,
+            burst: self.burst.max(1) as u32,
+            max_backlog: self.max_backlog.max(0) as u32,
+        }
+    }
+
     /// topic starts with dot, means topic value required
     #[inline]
     pub(crate) fn is_dot(&self) -> bool {
@@ -266,8 +357,28 @@ impl RpFn {
             }
         }
 
-        if f.code != self.code {
+        let code_changed = f.code != self.code;
+        if code_changed {
             self.code = f.code;
+        }
+        // [skv], [breaker] plain settings
+        self.secret_names = f.secret_names;
+        self.breaker_fails = f.breaker_fails;
+        self.breaker_slow_ms = f.breaker_slow_ms;
+        self.breaker_open_sec = f.breaker_open_sec;
+        self.breaker_open_max_sec = f.breaker_open_max_sec;
+        self.max_attempts = f.max_attempts;
+        self.notify_q = f.notify_q;
+        self.dlq = f.dlq;
+        self.max_parallel = f.max_parallel;
+        self.min_parallel = f.min_parallel;
+        self.target_ms = f.target_ms;
+        self.rate_per_sec = f.rate_per_sec;
+        self.burst = f.burst;
+        self.max_backlog = f.max_backlog;
+        if code_changed {
+            // [breaker] the operator's fix: an open breaker probes it at once
+            cluster.breaker_code_changed(self);
         }
         if f.cleanup_logs_min != self.cleanup_logs_min {
             self.cleanup_logs_min = f.cleanup_logs_min;
@@ -428,6 +539,7 @@ impl RpFnLog {
             id_value: true,
             pks,
             optional_caller: Some(db_event_request::OptionalCaller::CallBy(node_id)),
+            traceparent: self.traceparent.clone().unwrap_or_default(), // [otel]
         }
     }
 }

@@ -1,7 +1,7 @@
 
 [package]
 name = "rppd"
-version = "0.2.7"
+version = "0.2.16"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - Rust Python Postgres"
@@ -33,7 +33,7 @@ bb8-postgres = {version = "0.9.0", features = ["with-chrono-0_4","with-uuid-0_8"
 thiserror = "2"
 pyo3 = { version = "^0.29", features = ["auto-initialize", "uuid"] }
 
-etcds = {version = "^0.20"}
+etcds = {version = "^0.21"}
 etcd-client = { version = "^0.20", optional = true}
 
 sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "chrono"] }
@@ -43,8 +43,11 @@ cron-parser = "0.12"
 dns-lookup = "4.0"
 shims = "0.1"
 rppd-common = {path = "../rppd-common"}
+# [breaker] rppd.yaml applied at startup (schema.rs): SchemaGuard, no hand-written DDL
+schema_guard_tokio = "^1.10"
+yaml-rust = "^0.4"
 opentelemetry_sdk = { version = "^0.33", features = ["rt-tokio", "trace"], optional = true }
-opentelemetry = { version = "^0.33", optional = true }
+opentelemetry = { version = "^0.33", features = ["trace", "metrics"], optional = true }
 
 
 [features]

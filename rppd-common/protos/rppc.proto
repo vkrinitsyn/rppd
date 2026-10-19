@@ -30,6 +30,11 @@ message DbEventRequest {
 	// return on second call with this values
 	// the function might pass non PK values OR combined PK
 	repeated PkColumn pks = 5;
+
+	// [otel] W3C traceparent of the cluster transaction whose commit fired this
+	// event (yt-pgxt resilience.md phase 4): the function's span is its child, and
+	// the function sees its own as TRACE. Empty: no trace.
+	string traceparent = 6;
 }
 
 enum PkColumnType {

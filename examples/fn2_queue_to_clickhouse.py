@@ -3,7 +3,7 @@
 # the database.
 #
 # Bound locals: KEY and VALUE for a queue event, plus DB, ETCD and - the piece
-# this test exercises - CH, the clickhouse_connect client that yaxaha binds
+# this test exercises - CH, the clickhouse_connect client that yt-cluster binds
 # when serve_clickhouse is on (see CfgTabl.on_commit_python).
 #
 # It joins the original pgbench row with the live cluster ping status and lands

@@ -1,5 +1,5 @@
 # Step 1 of the pipeline: fires on every INSERT into public.bench_src via
-# yaxaha's CfgTabl.on_commit_python, i.e. after the CLUSTER commit, not on a
+# yt-cluster's CfgTabl.on_commit_python, i.e. after the CLUSTER commit, not on a
 # per-row PostgreSQL trigger.
 #
 # Bound locals (see rppd README): DB, ETCD, TABLE, TRIG, and one upper-cased

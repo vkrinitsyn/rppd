@@ -36,10 +36,16 @@ database:
                     nullable: false
                 # SchemaGuard expresses uniqueness as a unique INDEX, not a
                 # column constraint. Postgres implements a UNIQUE constraint
-                # with a unique index anyway, so the enforcement is identical;
+                # with a unique index anyway, so the enforcement is identical
+                # (ytserv's `on conflict (host)` is resolved by it the same way);
                 # the only difference is that it is not listed in
                 # pg_constraint, which nothing here reads.
+                # `name` is required: an index block without one is no index at
+                # all to SchemaGuard ("+" names it idx_<table>_<column>). Without
+                # it these three were never made, and every roster upsert failed
+                # 42P10 (topology 92_rppd, the nightly of 2026-10-17).
                 index:
+                    name: "+"
                     unique: true
                 description: The node address and port to connect
             - column:
@@ -48,6 +54,7 @@ database:
                 constraint:
                     nullable: false
                 index:
+                    name: "+"
                     unique: true
                 description: Readable name for a node host instance
             - column:
@@ -65,6 +72,7 @@ database:
                 name: master
                 type: bool
                 index:
+                    name: "+"
                     unique: true
                 description: "The node acts as cluster coordinator. Used values: true or null"
 
@@ -114,7 +122,7 @@ database:
                 defaultValue: "''"
                 constraint:
                     nullable: false
-                description: "'': per table; '.column': per value; any other name: a shared global queue"
+                description: "empty: per table; .column: per value; any other name: a shared global queue"
             - column:
                 name: priority
                 type: int
@@ -184,6 +192,15 @@ database:
                 type: int
                 description: Shallow clone depth; 0 fetches full history
             - column:
+                name: secret_names
+                type: text
+                description: >
+                    [skv] Names in the secret store of the host this function may
+                    read as SECRET.get(name), separated by commas or spaces.
+                    Names only - never a value. Whoever may write this table
+                    decides which function reads which secret: its GRANTs are
+                    the boundary.
+            - column:
                 name: source_secret_name
                 type: varchar(80)
                 description: >
@@ -211,6 +228,107 @@ database:
                 name: error
                 type: text
                 description: Why this function was last held back or failed to install. NULL when installed.
+
+            # ── [breaker] the circuit breaker (yt-pgxt resilience.md, D3/D4) ──
+            #
+            # All defaulted to off: a function with breaker_fails = 0 and
+            # max_attempts = 0 runs exactly as before.
+            - column:
+                name: breaker_fails
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+                description: Failures in a row that open the breaker on a node; 0 = no breaker
+            - column:
+                name: breaker_slow_ms
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+                description: A call slower than this counts as a failure; 0 = off
+            - column:
+                name: breaker_open_sec
+                type: int
+                defaultValue: "30"
+                constraint:
+                    nullable: false
+                description: How long an open breaker holds events before one probe; doubles per re-open
+            - column:
+                name: breaker_open_max_sec
+                type: int
+                defaultValue: "900"
+                constraint:
+                    nullable: false
+                description: The longest the doubling back-off grows to
+            - column:
+                name: max_attempts
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+                description: >
+                    Attempts per event; a failed event is retried (when the
+                    breaker lets events through) until then, and then goes to
+                    dlq. 0 = no retry: the error is recorded and the event is
+                    done, as before. With retries an etcd message is
+                    acknowledged only once it succeeded or was dead-lettered:
+                    at-least-once, so functions must be idempotent.
+            - column:
+                name: notify_q
+                type: varchar(256)
+                description: A /q/ queue for the transitions of the breaker (open, closed); NULL sends nothing
+            - column:
+                name: dlq
+                type: varchar(256)
+                description: A /q/ queue for events that failed max_attempts times; NULL drops them after logging
+
+            # ── [shaper] the traffic shaper (yt-pgxt resilience.md, D5) ───────
+            - column:
+                name: max_parallel
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+                description: >
+                    The ceiling of the adaptive limit - how many calls of this
+                    function may run at once on a node, lowered while it slows
+                    down; 0 = no shaping
+            - column:
+                name: min_parallel
+                type: int
+                defaultValue: "1"
+                constraint:
+                    nullable: false
+                description: The floor the adaptive limit never goes under
+            - column:
+                name: target_ms
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+                description: The latency the limit steers by; 0 = learned (twice the 10th percentile of the last 100 calls)
+            - column:
+                name: rate_per_sec
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+                description: A hard cap of calls per second on a node, on top of the limit; 0 = none
+            - column:
+                name: burst
+                type: int
+                defaultValue: "1"
+                constraint:
+                    nullable: false
+                description: Calls the rate cap lets through at once after a pause
+            - column:
+                name: max_backlog
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+                description: Events waiting on a node over this send one over notice to notify_q (and one under); 0 = none
 
       # ── execution log ────────────────────────────────────────────────────
           triggers:
@@ -317,9 +435,105 @@ database:
             - column:
                 name: error_msg
                 type: text
+            - column:
+                name: watch_min
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+            - column:
+                name: retry_sec
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+            - column:
+                name: watch_q
+                type: varchar(256)
+            - column:
+                name: deadline_q
+                type: varchar(256)
+            - column:
+                name: state
+                type: varchar(16)
+                defaultValue: "'ok'"
+                constraint:
+                    nullable: false
+            - column:
+                name: last_seen
+                type: timestamptz
+            - column:
+                name: since
+                type: timestamptz
+            - column:
+                name: attempt
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
           triggers:
             - trigger:
                 name: "@extschema@_rppd_cron_event"
                 event: after insert or update or delete
                 when: for each row
                 proc: "@extschema@.rppd_event()"
+
+      # ── [breaker] the breaker's state per function per node ──────────────
+      - table:
+          tableName: rppd_function_state
+          description: >
+            One row per function per node, written by that node only, on the
+            transitions of the breaker - readable with SQL, read back on a restart
+            (an open breaker stays open until its back-off ends)
+          columns:
+            - column:
+                name: fn_id
+                type: int
+                constraint:
+                    primaryKey: true
+                    nullable: false
+            - column:
+                name: node_id
+                type: int
+                constraint:
+                    primaryKey: true
+                    nullable: false
+                description: rppd_config.id of the node
+            - column:
+                name: state
+                type: varchar(8)
+                defaultValue: "'closed'"
+                constraint:
+                    nullable: false
+                description: closed, open or half
+            - column:
+                name: since
+                type: timestamptz
+                description: When the current state began
+            - column:
+                name: attempt
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+                description: Re-opens since the last close; the back-off doubles with each
+            - column:
+                name: last_error
+                type: text
+            - column:
+                name: held
+                type: int
+                defaultValue: "0"
+                constraint:
+                    nullable: false
+                description: Events held while not closed
+            - column:
+                name: limit_now
+                type: int
+                description: The adaptive limit of the shaper, written at most every 5 s while it moves
+            - column:
+                name: updated
+                type: timestamptz
+                defaultValue: current_timestamp
+                constraint:
+                    nullable: false

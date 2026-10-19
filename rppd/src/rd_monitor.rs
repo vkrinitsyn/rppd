@@ -206,9 +206,9 @@ impl RppdNodeCluster {
                             if let Some(node) = self.node_connections.read().await.get(&id) {
                                 match node {
                                     Ok(n) => {
-                                        match n.lock().await.status(StatusRequest {
+                                        match n.lock().await.status(self.peer(StatusRequest {
                                             config_schema_table: schema.clone(),
-                                            node_id: id.clone(), fn_log: None }).await {
+                                            node_id: id.clone(), fn_log: None }).await).await {
                                             Ok(r) => {
                                                 let r = r.into_inner();
                                                 let mut stat = self.stat.write().await;
@@ -240,9 +240,9 @@ impl RppdNodeCluster {
                         if let Some(node) = self.node_connections.read().await.get(&master_id) {
                             match node {
                                 Ok(n) => {
-                                    match n.lock().await.status(StatusRequest {
+                                    match n.lock().await.status(self.peer(StatusRequest {
                                         config_schema_table: schema.clone(),
-                                        node_id: master_id, fn_log: None }).await {
+                                        node_id: master_id, fn_log: None }).await).await {
                                         Ok(r) => {
                                             let r = r.into_inner();
                                             if !r.is_master {  // discrepancy
@@ -277,6 +277,7 @@ impl RppdNodeCluster {
                 self.become_master(prev_db_master).await;
             }
             self.cronjob().await;
+            self.cadence_tick().await;
             self.cleanup_fn_logs().await;
             let _ = sleep(Duration::from_millis(5*TIMEOUT_MS)).await;
         }
@@ -285,7 +286,12 @@ impl RppdNodeCluster {
     #[cfg(feature = "lib-embedded")]
     pub(crate) async fn start_monitoring(&self) {
         loop {
+            // [db-tag] stopped: its database has no function left
+            if self.stopped.load(Ordering::Relaxed) {
+                break;
+            }
             self.cronjob().await;
+            self.cadence_tick().await;
             self.cleanup_fn_logs().await;
             let _ = sleep(Duration::from_millis(5*TIMEOUT_MS)).await;
         }

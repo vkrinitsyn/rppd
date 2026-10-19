@@ -82,6 +82,12 @@ pub struct RppdConfig {
     pub max_queue_size: usize,
     pub force_master: bool,
     pub verbose: bool,
+    /// [db-tag] The database this instance serves, when it is not an embedder's
+    /// default one (yt-pgxt combined-config.md D11: one rppd per database): its
+    /// queues are `/q/<db_tag>/<name>` for the `/q/<name>` its functions name, and
+    /// its calls to its peers carry it (`rppd-db`), for the instance of that
+    /// database there. Empty: queues as named, calls untagged.
+    pub db_tag: String,
 }
 
 impl Default for RppdConfig {
@@ -119,6 +125,7 @@ impl Default for RppdConfig {
             max_queue_size: RppdConfig::max_queue_size(),
             force_master: false,
             verbose: false,
+            db_tag: String::new(),
         }
     }
 }
@@ -236,6 +243,7 @@ impl RppdConfig {
             max_queue_size: RppdConfig::max_queue_size(),
             force_master,
             verbose,
+            db_tag: String::new(),
         })
     }
 
@@ -337,6 +345,40 @@ impl RppdConfig {
         format!("postgres://{}:{}@{}", self.user, self.pwd, urls[urls.len() - 1])
     }
 
+    /// [rppd-tables] The connection URL rppd uses, user and password in it - for an
+    /// embedding process to run `ensure_schema` where rppd would connect.
+    pub fn connection_url(&self) -> String {
+        self.db_url()
+    }
+
+    /// [db-tag] A queue key in this instance's namespace: `/q/<name>...` (or
+    /// `/queue/`) becomes `/q/<db_tag>/<name>...`; anything else, or an untagged
+    /// instance, as given.
+    pub fn qkey(&self, key: &str) -> String {
+        if self.db_tag.is_empty() {
+            return key.to_string();
+        }
+        for root in ["/q/", "/queue/"] {
+            if let Some(rest) = key.strip_prefix(root) {
+                return format!("{}{}/{}", root, self.db_tag, rest);
+            }
+        }
+        key.to_string()
+    }
+
+    /// [db-tag] A key as this instance's functions name it: its namespace taken off.
+    pub fn unqkey(&self, key: &str) -> String {
+        if self.db_tag.is_empty() {
+            return key.to_string();
+        }
+        for root in ["/q/", "/queue/"] {
+            if let Some(rest) = key.strip_prefix(root).and_then(|r| r.strip_prefix(&self.db_tag)).and_then(|r| r.strip_prefix('/')) {
+                return format!("{}{}", root, rest);
+            }
+        }
+        key.to_string()
+    }
+
     /// Apache DataFusion (aka Ballista) scheduler url ready to pass to `BallistaSessionContext`, ex: "df://localhost:50050".
     /// None if not configured, disabling the `DF` python client
     pub(crate) fn df_url(&self) -> Option<String> {
@@ -358,6 +400,22 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    /// [db-tag] a tagged instance's queues are its database's: `/q/<db>/...` on the
+    /// wire, `/q/...` as its functions name them; an untagged one's as named
+    #[test]
+    fn a_tagged_instance_keeps_its_queues_apart() {
+        let mut c = RppdConfig { db_tag: "appdb".into(), ..Default::default() };
+        assert_eq!(c.qkey("/q/orders/producer/1"), "/q/appdb/orders/producer/1");
+        assert_eq!(c.qkey("/queue/x"), "/queue/appdb/x");
+        assert_eq!(c.qkey("public.t"), "public.t", "a table is no queue");
+        assert_eq!(c.unqkey("/q/appdb/orders/producer/1"), "/q/orders/producer/1");
+        assert_eq!(c.unqkey("/q/other/orders"), "/q/other/orders", "another database's");
+        assert_eq!(c.unqkey("/q/appdbx/orders"), "/q/appdbx/orders", "a name that starts like the tag is no tag");
+        c.db_tag = String::new();
+        assert_eq!(c.qkey("/q/orders"), "/q/orders");
+        assert_eq!(c.unqkey("/q/orders"), "/q/orders");
+    }
 
     #[inline]
     fn uuid() -> String {

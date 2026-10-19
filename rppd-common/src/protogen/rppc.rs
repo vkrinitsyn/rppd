@@ -19,6 +19,11 @@ pub struct DbEventRequest {
     /// the function might pass non PK values OR combined PK
     #[prost(message, repeated, tag = "5")]
     pub pks: ::prost::alloc::vec::Vec<PkColumn>,
+    /// \[otel\] W3C traceparent of the cluster transaction whose commit fired this
+    /// event (yt-pgxt resilience.md phase 4): the function's span is its child, and
+    /// the function sees its own as TRACE. Empty: no trace.
+    #[prost(string, tag = "6")]
+    pub traceparent: ::prost::alloc::string::String,
     /// rppd_config.id of caller host or None if called by trigger
     #[prost(oneof = "db_event_request::OptionalCaller", tags = "4")]
     pub optional_caller: ::core::option::Option<db_event_request::OptionalCaller>,

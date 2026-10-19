@@ -23,6 +23,11 @@ pub struct MessageRequest {
     /// value is the value, in bytes, to associate with the key in the key-value store.
     #[prost(bytes = "vec", tag = "2")]
     pub value: ::prost::alloc::vec::Vec<u8>,
+    /// \[otel\] the producer's W3C traceparent, kept by etcds' queue with the message
+    /// (yt-pgxt resilience.md phase 4): the function's span continues that trace.
+    /// Empty from an etcd that does not carry it.
+    #[prost(string, tag = "3")]
+    pub traceparent: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

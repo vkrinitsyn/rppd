@@ -10,7 +10,7 @@ use pyo3::prelude::PyModule;
 use pyo3::types::{IntoPyDict, PyAnyMethods};
 use uuid::Uuid;
 
-use crate::rd_config::{RppdNodeCluster, TIMEOUT_MS};
+use crate::rd_config::{RppdNodeCluster, SecretOpener, TIMEOUT_MS};
 use crate::rd_fn::{RpFn, RpFnLog};
 use crate::LP;
 
@@ -88,6 +88,65 @@ pub const TOPIC: &str = "TOPIC";
 pub const TABLE: &str = "TABLE";
 pub const TRIG: &str = "TRIG";
 pub const VALUE: &str = "VALUE";
+/// [skv] the secret store, for the names a function lists in `secret_names`
+pub const SECRET: &str = "SECRET";
+/// [otel] the call's own W3C traceparent, to continue its trace (rd_config.rs)
+pub const TRACE: &str = "TRACE";
+
+/// [skv] The host's secret opener (ytserv's secret store), set through
+/// `ConfigurationRequest::Secrets`. One per process, like the embedded runtime.
+static SECRET_OPENER: std::sync::RwLock<Option<SecretOpener>> = std::sync::RwLock::new(None);
+
+pub(crate) fn set_secret_opener(o: Option<SecretOpener>) {
+    *SECRET_OPENER.write().unwrap_or_else(|e| e.into_inner()) = o;
+}
+
+/// [skv] `SECRET` in a function's locals: `SECRET.get("name")` -> str,
+/// `SECRET.get_bytes("name")` -> bytes. Only for the names the function lists in
+/// `rppd_function.secret_names` - whoever may write that table decides, so its
+/// GRANTs are the boundary (README). The value goes from the host's memory into
+/// this interpreter and nowhere else: not logged, not in `rppd_function_log`.
+#[pyo3::pyclass(name = "Secrets")]
+pub struct Secrets {
+    names: Vec<String>,
+}
+
+impl Secrets {
+    fn open(&self, name: &str) -> PyResult<Vec<u8>> {
+        if !self.names.iter().any(|n| n == name) {
+            return Err(pyo3::exceptions::PyPermissionError::new_err(format!(
+                "secret {:?} is not in this function's secret_names", name)));
+        }
+        let o = SECRET_OPENER.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let o = o.ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
+            "no secret store in this host (rppd runs outside ytserv, or ytserv has none)"))?;
+        o(name).map_err(pyo3::exceptions::PyKeyError::new_err)
+    }
+}
+
+#[pyo3::pymethods]
+impl Secrets {
+    /// The value as text (UTF-8).
+    fn get(&self, name: &str) -> PyResult<String> {
+        String::from_utf8(self.open(name)?).map_err(|_| pyo3::exceptions::PyValueError::new_err(format!(
+            "secret {:?} is not UTF-8 text - use SECRET.get_bytes", name)))
+    }
+
+    /// The value as bytes.
+    fn get_bytes<'py>(&self, py: Python<'py>, name: &str) -> PyResult<pyo3::Bound<'py, pyo3::types::PyBytes>> {
+        Ok(pyo3::types::PyBytes::new(py, &self.open(name)?))
+    }
+
+    /// The names this function may open.
+    fn names(&self) -> Vec<String> {
+        self.names.clone()
+    }
+}
+
+/// `secret_names` as written: names separated by commas or whitespace.
+pub(crate) fn secret_names(s: Option<&str>) -> Vec<String> {
+    s.unwrap_or("").split(|c: char| c == ',' || c.is_whitespace()).filter(|n| !n.is_empty()).map(|n| n.to_string()).collect()
+}
 
 impl RppdNodeCluster {
     /// create Python runtime and DB connection
@@ -225,6 +284,17 @@ impl PyContext {
                 let _ = locals.set_item(CH, ch.bind_borrowed(py))?;
             }
 
+            // [otel] the trace this call is a span of
+            if let Some(tp) = &x.traceparent {
+                let _ = locals.set_item(TRACE, tp.clone().into_pyobject(py)?.into_any().as_borrowed())?;
+            }
+
+            // [skv] the secret store, for the names this function lists
+            let names = secret_names(fc.secret_names.as_deref());
+            if !names.is_empty() {
+                let _ = locals.set_item(SECRET, pyo3::Bound::new(py, Secrets { names })?)?;
+            }
+
             let capture_instance = if fc.fn_logging {
                 let capture_instance =   PyModule::from_code(
                     py,
@@ -258,3 +328,26 @@ impl PyContext {
     }
 }
 
+
+#[cfg(test)]
+mod skv_tests {
+    use super::*;
+
+    #[test]
+    fn secret_names_split_on_commas_and_spaces() {
+        assert_eq!(secret_names(Some("db_password, api_token  llm_key")), vec!["db_password", "api_token", "llm_key"]);
+        assert!(secret_names(None).is_empty());
+        assert!(secret_names(Some(" , ")).is_empty());
+    }
+
+    #[test]
+    fn a_function_opens_only_what_it_lists_and_only_with_an_opener() {
+        set_secret_opener(None);
+        let s = Secrets { names: vec!["db_password".into()] };
+        assert!(s.open("db_password").is_err(), "no opener in this host");
+        set_secret_opener(Some(std::sync::Arc::new(|n: &str| if n == "db_password" { Ok(b"s3cret".to_vec()) } else { Err(format!("no secret named {}", n)) })));
+        assert_eq!(s.open("db_password").unwrap(), b"s3cret");
+        assert!(s.open("api_token").is_err(), "not listed");
+        set_secret_opener(None);
+    }
+}
