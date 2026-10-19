@@ -106,7 +106,7 @@ CH -- ClickHouse client (clickhouse_connect), see below
 
 ### ClickHouse client `CH`
 
-Set `ch_url` (or, under yt-cluster, the node's `serve_clickhouse` + `clickhouse_url`
+Set `ch_url` (or, under YT Cluster, the node's `serve_clickhouse` + `clickhouse_url`
 config rows) to expose a `clickhouse_connect` client to every function as `CH`,
 alongside `DB`. Requires the python `clickhouse_connect` package; a missing
 package or a refused connection is logged and simply leaves `CH` unbound.
@@ -136,7 +136,7 @@ names (commas or spaces), and opens only those - another name raises
 `rppd_function` decides which function reads which secret**: the table
 replicates, so its GRANTs are the boundary. The value is opened in the node's
 memory with the cluster master key and goes into this interpreter only - not to
-`rppd_function_log`, not to the database. See ytserv/skv-secrets.md in yt-pgxt.
+`rppd_function_log`, not to the database. See ytserv/skv-secrets.md in the YT Cluster sources.
 
 ### python example:
 ```python
@@ -337,7 +337,7 @@ There is no hand-written `CREATE` or `ALTER` in rppd.
 ## End-to-end tests
 
 rppd runs inside the YT Cluster's ytserv, and is tested there, from the
-yt-cluster-tests repository (DBinvent/yt-cluster) next to this one:
+yt-cluster-tests repository (DBinvent/yt-cluster-tests) next to this one:
 
 - `yt-cluster-tests/topology/92_rppd.sh` - Python server functions triggered by a
   cluster commit, on a seven-node docker cluster;

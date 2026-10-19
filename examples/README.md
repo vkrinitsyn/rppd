@@ -29,7 +29,7 @@ landed in ClickHouse; both queue-name spellings work.
 
 ## A two-stage Python pipeline
 
-Run against a 3-node yt-cluster cluster on 2026-09-15:
+Run against a 3-node YT Cluster on 2026-09-15:
 
 ```
 INSERT ──on_commit_python──▶ fn1_src_to_queue.py ──etcd /q/──▶ fn2_queue_to_clickhouse.py ──▶ ClickHouse
@@ -48,7 +48,7 @@ repo under `pipeline/`.
 **A node must find itself in `rppd_config`, and the master must be set.** With
 no self row, `start_bg` gets `id = 0`, its `select master … where id = $1`
 returns nothing, `started` is never set, and every event is then refused with a
-misleading `[py] Internal error "not a master"`. Embedded in yt-cluster this is now
+misleading `[py] Internal error "not a master"`. Embedded in YT Cluster this is now
 maintained automatically: ytserv mirrors the cluster roster into the table each
 heartbeat and points `master` at the elected cluster leader, calling
 `set_master()` so the running instance follows a handover without a restart.
@@ -61,7 +61,7 @@ the first `execute`, and rppd reuses the connection across calls, so without a
 ACCESS SHARE on whatever it read — enough to block `TRUNCATE` or DDL on that
 table indefinitely. Both examples commit after reading.
 
-**Under yt-cluster, `yt_info()` returns JSON, not a record set.** So this fails:
+**Under YT Cluster, `yt_info()` returns JSON, not a record set.** So this fails:
 
 ```sql
 SELECT value FROM yt_info('E') AS x(name text, value text, module text)
