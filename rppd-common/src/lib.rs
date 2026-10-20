@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 
 /// RPPD - protibuf types and services 
 pub mod protogen;

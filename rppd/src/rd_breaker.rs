@@ -85,6 +85,8 @@ impl RppdNodeCluster {
         let cfg = fc.breaker_cfg();
         let now = Utc::now();
         let mut after = After::default();
+        // a held event's in-progress mark on its queue line, if its pick left one
+        let mut mark = None;
         let run = {
             let mut map = self.breakers.lock().unwrap();
             if !cfg.on() && !map.contains_key(&fc.id) {
@@ -94,6 +96,7 @@ impl RppdNodeCluster {
             let (ok, t) = breaker::admit(&mut rt.b, now, &cfg);
             let run = if ok { Some(f) } else {
                 // the shaper's slot it took is given back (rd_config.rs): it asks again
+                mark = f.fn_idp.as_ref().map(|p| (p.priority, f.id, fc.to_topic(&f)));
                 rt.held.push_back(RpFnLog { shaped: false, ..f });
                 None
             };
@@ -102,6 +105,12 @@ impl RppdNodeCluster {
         };
         if run.is_none() {
             debug!(self.log, "{}breaker: fn {} holds an event", LP, fc.id);
+        }
+        if let Some((priority, id, topic)) = mark {
+            // held, so not running: its line must not stay busy on its account, or
+            // the events the close drains back behind the mark never run (topology
+            // 92b B4, 2026-10-20: only the probe ran, one of ten)
+            self.queue.write().await.unmark(priority, id, topic);
         }
         self.breaker_after(fc, after).await;
         run

@@ -180,6 +180,13 @@ impl RppdNodeCluster {
         self.master.load(Ordering::Relaxed)
     }
 
+    /// Whether this instance has started: connected, registered and its functions
+    /// loaded. An event that comes before is refused ("not a master"), so an
+    /// embedder waits for this before it says the instance is up.
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::Relaxed)
+    }
+
     /// giveup master
     pub async fn unmaster(&self) {
         if self.master.load(Ordering::Relaxed) {

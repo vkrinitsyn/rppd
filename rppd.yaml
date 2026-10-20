@@ -217,13 +217,13 @@ database:
                 name: min_schema_version
                 type: varchar(80)
                 description: >
-                    Lowest rdbm schema version this body runs against, checked
+                    Lowest sge schema version this body runs against, checked
                     against what the WHOLE cluster has deployed before install.
                     Unmet means not installed, with the reason in `error`.
             - column:
                 name: schema_git_tag
                 type: varchar(80)
-                description: The exact rdbm schema revision this body was written against. A tag is identity, not ordering.
+                description: The exact sge schema revision this body was written against. A tag is identity, not ordering.
             - column:
                 name: error
                 type: text

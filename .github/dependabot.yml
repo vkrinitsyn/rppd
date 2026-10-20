@@ -1,0 +1,28 @@
+# Dependabot: weekly updates of the rppd workspace's Cargo dependencies (rppd,
+# rppd-common). Security updates are switched on in the repository's settings
+# (Code security), not here.
+# The workspace patches etcds to the sibling checkout (../etcd): until it goes,
+# Dependabot cannot resolve the dependencies and reports an error instead of
+# updating.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    # one pull request for the minor and patch updates of a week; a major update
+    # comes on its own
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # pyo3 0.30 needs Python >= 3.9: the glibc 2.31 release package is built on
+      # Ubuntu 20.04 (python3 3.8) - a major update waits until that target goes
+      - dependency-name: pyo3
+        update-types: ["version-update:semver-major"]
+  # the actions .github/workflows runs (audit.yml: cargo audit and cargo geiger)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

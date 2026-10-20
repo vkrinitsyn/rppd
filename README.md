@@ -41,6 +41,19 @@ cargo install cargo-pgrx --force && cargo pgrx
 # cargo install protobuf-codegen
  
 ```
+## Checks
+
+```shell
+cargo audit                                    # known vulnerabilities (RustSec) in the dependencies Cargo.lock pins
+cargo geiger --manifest-path rppd/Cargo.toml   # unsafe code in rppd (rppd-common with it) and in each dependency it uses
+```
+
+`cargo install cargo-audit cargo-geiger` installs them; with cargo-make,
+`cargo make audit` and `cargo make geiger` run the same. geiger reads
+every dependency file in the target directory, so give it one of its own
+(`CARGO_TARGET_DIR=target/geiger`), or an old build's can name a source file
+that is gone.
+
 ## C version of Postgres extension
 If you need C version of Postgres extension, please check
 [Readme C version](rppd-pg-c)

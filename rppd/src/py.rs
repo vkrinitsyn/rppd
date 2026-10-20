@@ -350,4 +350,25 @@ mod skv_tests {
         assert!(s.open("api_token").is_err(), "not listed");
         set_secret_opener(None);
     }
+
+    /// [pyo3] SECRET as a function's code meets it: a Secrets in the interpreter, in
+    /// the locals as `invoke` puts it there, its methods called from Python. Only the
+    /// checks made before the secret store, so SECRET_OPENER stays the test above's
+    #[test]
+    fn a_function_sees_secret_in_the_interpreter() {
+        let r: PyResult<(Vec<String>, String, String)> = Python::attach(|py| {
+            let locals = pyo3::types::PyDict::new(py);
+            locals.set_item(SECRET, pyo3::Bound::new(py, Secrets { names: vec!["db_password".into()] })?)?;
+            py.run(c_str!("names = SECRET.names()\n\
+                try:\n    SECRET.get('api_token')\n    text = 'opened'\nexcept PermissionError as e:\n    text = str(e)\n\
+                try:\n    SECRET.get_bytes('api_token')\n    raw = 'opened'\nexcept PermissionError as e:\n    raw = str(e)\n"),
+                None, Some(&locals))?;
+            Ok((locals.get_item("names")?.extract()?, locals.get_item("text")?.extract()?, locals.get_item("raw")?.extract()?))
+        });
+        let (names, text, raw) = r.unwrap_or_else(|e| panic!("{}", e));
+        assert_eq!(names, vec!["db_password"]);
+        for m in [text, raw] {
+            assert!(m.contains("not in this function's secret_names"), "{}", m);
+        }
+    }
 }

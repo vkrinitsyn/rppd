@@ -46,8 +46,16 @@ impl QueueType {
     /// event and then held the rest forever.
     pub(crate) fn done(&mut self, l: &RpFnLog, topic: TopicDef) {
         let Some(f) = &l.fn_idp else { return };
-        let Some(line) = self.0.get_mut(&f.priority).and_then(|q| q.get_mut(&topic)) else { return };
-        if let Some(i) = line.iter().rposition(|c| matches!(c, PyCall::InProgressSaved(id, _) if *id == l.id)) {
+        self.unmark(f.priority, l.id, topic);
+    }
+
+    /// [breaker] The in-progress mark event `id` left on its line goes: it finished
+    /// (`done`), or its breaker holds it (rd_breaker.rs `breaker_gate`). A held event
+    /// is not running, and its mark would keep the events the close drains back
+    /// behind it from ever running.
+    pub(crate) fn unmark(&mut self, priority: i32, id: i64, topic: TopicDef) {
+        let Some(line) = self.0.get_mut(&priority).and_then(|q| q.get_mut(&topic)) else { return };
+        if let Some(i) = line.iter().rposition(|c| matches!(c, PyCall::InProgressSaved(m, _) if *m == id)) {
             line.remove(i);
         }
     }
@@ -247,6 +255,28 @@ mod tests {
         q.done(&ev(3, &b), "b".into());
         assert!(q.pick_one().is_none());
         assert_eq!(q.size(), (0, 0));
+    }
+
+    /// [breaker] an event its breaker holds after the pick is not running: its mark
+    /// goes, and the events the close drains back to the line run, oldest first.
+    /// With the mark left, the line stayed busy and only the probe ran - one of ten
+    /// in topology 92b B4 (2026-10-20)
+    #[test]
+    fn a_held_event_leaves_its_line_free_for_the_drain() {
+        let a = fid(1);
+        let mut q: QueueType = Default::default();
+        q.put_one(ev(1, &a), "a".into(), a.clone(), false);
+        let held = q.pick_one().unwrap();
+        assert!(q.pick_one().is_none(), "picked: its line is busy");
+        q.unmark(a.priority, held.id, "a".into()); // the breaker holds it
+        // the close: the held events back to the line, oldest first
+        q.put_one(ev(1, &a), "a".into(), a.clone(), false);
+        q.put_one(ev(2, &a), "a".into(), a.clone(), false);
+        assert_eq!(q.pick_one().unwrap().id, 1, "the drained events run");
+        q.done(&ev(1, &a), "a".into());
+        assert_eq!(q.pick_one().unwrap().id, 2);
+        q.done(&ev(2, &a), "a".into());
+        assert!(q.pick_one().is_none());
     }
 
     /// [breaker] an event returned to a line that no longer exists starts a new one

@@ -34,7 +34,7 @@ pub(crate) async fn upgrade(db: &Pool<Postgres>, db_url: &str, schema: &str, log
 /// [rppd-tables] The SchemaGuard pass over rppd.yaml: what is missing is created - a
 /// table, a column - and nothing else changes; never a trigger. The number of changes.
 pub(crate) async fn migrate(db_url: &str, schema: &str) -> Result<usize, String> {
-    let yaml = match yaml_rust::YamlLoader::load_from_str(&crate::get_schema_def(schema)) {
+    let yaml = match yaml_rust2::YamlLoader::load_from_str(&crate::get_schema_def(schema)) {
         Ok(mut docs) if !docs.is_empty() => docs.remove(0),
         Ok(_) => return Err("rppd.yaml is empty".to_string()),
         Err(e) => return Err(format!("rppd.yaml: {}", e)),
@@ -51,17 +51,17 @@ mod tests {
     /// (found by topology 92b - no breaker columns, nothing loaded)
     #[test]
     fn rppd_yaml_texts_carry_no_quote() {
-        let docs = yaml_rust::YamlLoader::load_from_str(&crate::get_schema_def("public")).expect("rppd.yaml parses");
-        fn walk(y: &yaml_rust::Yaml, path: &str, bad: &mut Vec<String>) {
+        let docs = yaml_rust2::YamlLoader::load_from_str(&crate::get_schema_def("public")).expect("rppd.yaml parses");
+        fn walk(y: &yaml_rust2::Yaml, path: &str, bad: &mut Vec<String>) {
             match y {
-                yaml_rust::Yaml::Hash(h) => for (k, v) in h {
+                yaml_rust2::Yaml::Hash(h) => for (k, v) in h {
                     let k = k.as_str().unwrap_or("?");
                     if k == "description" {
                         if let Some(t) = v.as_str() { if t.contains('\'') { bad.push(format!("{}: {}", path, t)); } }
                     }
                     walk(v, &format!("{}/{}", path, k), bad);
                 },
-                yaml_rust::Yaml::Array(a) => for (i, v) in a.iter().enumerate() { walk(v, &format!("{}[{}]", path, i), bad); },
+                yaml_rust2::Yaml::Array(a) => for (i, v) in a.iter().enumerate() { walk(v, &format!("{}[{}]", path, i), bad); },
                 _ => {}
             }
         }
@@ -77,15 +77,15 @@ mod tests {
     /// seed and no master (found by topology 92_rppd and 92c, 2026-10-17)
     #[test]
     fn every_index_rppd_yaml_declares_is_one_schemaguard_makes() {
-        let docs = yaml_rust::YamlLoader::load_from_str(&crate::get_schema_def("public")).expect("rppd.yaml parses");
+        let docs = yaml_rust2::YamlLoader::load_from_str(&crate::get_schema_def("public")).expect("rppd.yaml parses");
         // every table, wherever the file nests it
-        fn tables<'a>(y: &'a yaml_rust::Yaml, out: &mut Vec<&'a yaml_rust::Yaml>) {
+        fn tables<'a>(y: &'a yaml_rust2::Yaml, out: &mut Vec<&'a yaml_rust2::Yaml>) {
             match y {
-                yaml_rust::Yaml::Hash(h) => {
+                yaml_rust2::Yaml::Hash(h) => {
                     if !y["tableName"].is_badvalue() { out.push(y); }
                     for v in h.values() { tables(v, out); }
                 }
-                yaml_rust::Yaml::Array(a) => for v in a { tables(v, out); },
+                yaml_rust2::Yaml::Array(a) => for v in a { tables(v, out); },
                 _ => {}
             }
         }
