@@ -5,6 +5,7 @@ version = "0.2.16"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - Rust Python Postgres"
+license = "MIT"
 
 [lib]
 name = "rppde" # to use this package as embeded library
