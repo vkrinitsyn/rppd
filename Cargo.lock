@@ -517,9 +517,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -664,7 +664,9 @@ dependencies = [
 
 [[package]]
 name = "etcds"
-version = "0.21.1"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d215256feabc423e6da6dc8d89d053a34226b6f69230e04aed84e54529664a21"
 dependencies = [
  "clap",
  "dns-lookup",
@@ -673,7 +675,7 @@ dependencies = [
  "prost",
  "rust-i18n",
  "serde",
- "serde-saphyr",
+ "serde-saphyr 2.0.0",
  "serde_json",
  "shims",
  "slog",
@@ -930,6 +932,16 @@ name = "granit-parser"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e20f99e46474f56bd905c56e817ebddcf377a611f94c53ac4649e4d3fa3c0cd0"
+dependencies = [
+ "arraydeque",
+ "smallvec",
+]
+
+[[package]]
+name = "granit-parser"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da55feca5d1625466bae068f9fd4b87892caeae70c3fe671ddb0f50d41aebf37"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -2099,7 +2111,7 @@ dependencies = [
  "itertools 0.11.0",
  "normpath",
  "serde",
- "serde-saphyr",
+ "serde-saphyr 1.3.0",
  "serde_json",
  "siphasher",
  "toml",
@@ -2191,7 +2203,24 @@ dependencies = [
  "annotate-snippets",
  "base64 0.23.1",
  "encoding_rs_io",
- "granit-parser",
+ "granit-parser 1.3.0",
+ "nohash-hasher",
+ "num-traits",
+ "serde_core",
+ "smallvec",
+ "zmij",
+]
+
+[[package]]
+name = "serde-saphyr"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a253edfdea34032da21af84e16fcc94f4c7a6ba237f9f3bc2dbf43cea8535c44"
+dependencies = [
+ "annotate-snippets",
+ "base64 0.23.1",
+ "encoding_rs_io",
+ "granit-parser 2.0.0",
  "nohash-hasher",
  "num-traits",
  "serde_core",
@@ -2814,9 +2843,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.54.0"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0c168a474b95bfecfe908a65d4bdffc523144b649a74c09c286afb35d53e0bc"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "bytes",
  "libc",

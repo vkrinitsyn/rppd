@@ -5,5 +5,5 @@ members = ["rppd-common", "rppd"]
 # [otel] etcds from the sibling checkout until 0.20.2 is published: its KeyValue
 # carries the queue message's traceparent (rppd/src/rd_etcd.rs), which 0.20.1 has
 # not. yt-pgxt's workspace patches the same way.
-[patch.crates-io]
-etcds = { path = "../etcd" }
+#[patch.crates-io]
+#etcds = { path = "../etcd" }
