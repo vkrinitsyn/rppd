@@ -18,6 +18,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=locales");
     println!("cargo:rerun-if-changed={}", DIR);
     println!("cargo:rerun-if-changed=build.rs");
+    // [publish] a packaged crate - cargo publish's verify, a build from crates.io - has its
+    // generated code in src/protogen as it was packaged: used as is, nothing written there
+    // (cargo refuses a build script that changes it, as a newer tonic-prost-build's output
+    // would) and no protoc needed. A git checkout regenerates it, as before
+    if PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?).join("Cargo.toml.orig").exists() {
+        return Ok(());
+    }
     let _ = fs::create_dir(TEMP_GEN_DIR);
     // let _ = fs::remove_dir_all(format!("src/{}", TEMP_GEN_DIR).as_str());
     // let _ = fs::create_dir(format!("src/{}", TEMP_GEN_DIR).as_str());
