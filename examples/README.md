@@ -47,8 +47,9 @@ repo under `pipeline/`.
 
 **A node must find itself in `rppd_config`, and the master must be set.** With
 no self row, `start_bg` gets `id = 0`, its `select master … where id = $1`
-returns nothing, `started` is never set, and every event is then refused with a
-misleading `[py] Internal error "not a master"`. Embedded in YT Cluster this is now
+returns nothing, `started` is never set, and every event is then refused with
+`[py] Internal error "RPPD-E122 not started: ..."` (older rppd: a misleading "not a
+master"). Embedded in YT Cluster this is now
 maintained automatically: ytserv mirrors the cluster roster into the table each
 heartbeat and points `master` at the elected cluster leader, calling
 `set_master()` so the running instance follows a handover without a restart.

@@ -1,5 +1,10 @@
 # RPPD - Rust Python Postgres Discovery
 
+[![ci](https://github.com/vkrinitsyn/rppd/actions/workflows/ci.yml/badge.svg)](https://github.com/vkrinitsyn/rppd/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/vkrinitsyn/rppd/graph/badge.svg)](https://codecov.io/gh/vkrinitsyn/rppd)
+[![audit](https://github.com/vkrinitsyn/rppd/actions/workflows/audit.yml/badge.svg)](https://github.com/vkrinitsyn/rppd/actions/workflows/audit.yml)
+[![license](https://img.shields.io/github/license/vkrinitsyn/rppd.svg)](LICENSE)
+
 ## Top features:
 
 - Etcd integration with either Rust implementation for message queue and valilla impl for topic notify
@@ -8,8 +13,12 @@
 - Simple cofiguration
 - Protobuf with gRPC
 - Embeddable to use as lib in your project
-- i18n for message translation
+- messages in six languages (de, en, fr, ja, ru, zh): the environment's LC_ALL, LC_MESSAGES
+  or LANG, or the embedder's (`rppde::i18n::set_lang`, as YT Cluster's ytserv sets its own)
 
+> [!NOTE]
+> Provided by [DBinvent](https://www.dbinvent.com), and an essential part of
+> [YT Cluster](https://www.dbinvent.com/cluster/)
 
 ## Build
 
@@ -140,8 +149,15 @@ values from the cluster's secret store - never from a table, never from etcd:
 ```python
 token = SECRET.get("api_token")          # str
 blob = SECRET.get_bytes("tls_key")       # bytes
+SECRET.check("api_token", presented)     # bool: is a presented str or bytes the secret's
 SECRET.names()                           # what this function may open
 ```
+
+While ytserv rotates a secret (`ytctl --rotate_key`), `SECRET.get` gives the new
+value and `SECRET.check` accepts the old and the new one, until the old one is
+discarded - check a key a client presents with `SECRET.check`, not by comparing
+with `SECRET.get`. Taking the new value, or a match of it, is what tells ytserv the
+new value is in use.
 
 `SECRET` exists only for a function whose `rppd_function.secret_names` lists
 names (commas or spaces), and opens only those - another name raises

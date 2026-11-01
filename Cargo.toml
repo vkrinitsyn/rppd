@@ -2,8 +2,8 @@
 resolver = "3"
 members = ["rppd-common", "rppd"]
 
-# [otel] etcds from the sibling checkout until 0.20.2 is published: its KeyValue
-# carries the queue message's traceparent (rppd/src/rd_etcd.rs), which 0.20.1 has
-# not. yt-pgxt's workspace patches the same way.
-#[patch.crates-io]
-#etcds = { path = "../etcd" }
+# [q-dead] etcds from crates.io: rppd asks ^0.23.0 (published 2026-11-01) - since 0.21.4
+# its queue registry by stream, the ETCD-E052 cancel rppd watches again after; 0.23.0
+# with every watch frame's header and a stream's key watches gone with it. ytserv, which
+# builds rppd from this checkout, asks the same. The sibling-checkout patch that stood in
+# for it is gone.

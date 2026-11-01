@@ -211,6 +211,8 @@ pub struct RpFnLog {
     pub(crate) shaped: bool,
     #[sqlx(skip)] /// [otel] when the shaper parked it, for `rppd.shaper.wait`
     pub(crate) parked: Option<Instant>,
+    #[sqlx(skip)] /// [shaper] when the shaper let it start - its rate-cap token taken
+    pub(crate) granted: Option<Instant>,
     #[sqlx(skip)] /// [otel] the trace this event continues: its producer's, then the call's own
     pub(crate) traceparent: Option<String>,
 
@@ -238,6 +240,7 @@ impl Default for RpFnLog {
             attempt: 0,
             shaped: false,
             parked: None,
+            granted: None,
             traceparent: None,
             trig_type: 0,
             started_at: Utc::now(),
@@ -404,24 +407,24 @@ impl RpFn {
             }
         };
         let msg = if self.verbose_debug {
-            format!("python:[\n{}\n] input: ({})", self.code, input)
+            tr!("fn.code", code = self.code, input = input)
         } else {
             "".to_string()
         };
-        format!("{} on run [{}]@{}: {}", err, self.schema_table, self.topic, msg)
+        tr!("fn.run", err = err, table = self.schema_table, topic = self.topic, more = msg)
     }
 
     #[inline]
     pub(crate) fn code(&self) -> Result<CString, PyErr> {
         CString::new(self.code.as_str())
-            .map_err(|e| PyErr::new::<PyTypeError, _>(format!("Code on Fn#{} failed to read: {}", self.id, e)))
+            .map_err(|e| PyErr::new::<PyTypeError, _>(tr!("fn.read_code", id = self.id, err = e)))
     }
 }
 
 // `output` must be listed: RpFnLog has the field, so FromRow looks for it and a
 // startup restore fails with "no column found for name: output" the moment
 // rppd_function_log has any row to restore. The node then never sets `started`,
-// and every later event is refused with the misleading "not a master".
+// and every later event is refused (RPPD-E122 "not started"; older rppd said "not a master").
 const SELECT_LOG: &str = "select id, node_id, fn_id, trig_value, trig_type, started_at, took_ms, output, error_msg from %SCHEMA%.rppd_function_log ";
 
 const INSERT_LOG_V: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type, trig_value) values ($1, $2, $3, $4) returning id";
@@ -480,14 +483,13 @@ impl RpFnLog {
             .bind(r.as_ref().err())
             .bind(self.id)
             .execute(&db).await {
-            error!(log, "{}", e);
+            error!(log, "{}{}", LP, tr!("fn.update", err = e));
         }
     }
 
     #[inline]
     pub(crate) async fn update_err(&self, r: String, db: Pool<Postgres>, schema: &String, log: &Logger) {
-        error!(log, "{}update_err {}", LP, r);
-
+        // the error itself is logged where it happened (cfg.run_failed, cfg.connect_py)
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set error_msg = $1 where id = $2";
         let sql = sql.replace("%SCHEMA%", schema.as_str());
@@ -495,7 +497,7 @@ impl RpFnLog {
             .bind(Some(r))
             .bind(self.id)
             .execute(&db).await {
-            error!(log, "{}{}", LP, e);
+            error!(log, "{}{}", LP, tr!("fn.update_err", err = e));
         }
     }
 

@@ -104,7 +104,7 @@ impl RppdNodeCluster {
             run
         };
         if run.is_none() {
-            debug!(self.log, "{}breaker: fn {} holds an event", LP, fc.id);
+            debug!(self.log, "{}{}", LP, tr_lazy!("breaker.hold", id = fc.id));
         }
         if let Some((priority, id, topic)) = mark {
             // held, so not running: its line must not stay busy on its account, or
@@ -190,7 +190,7 @@ impl RppdNodeCluster {
         };
         self.breaker_after(fc, after).await;
         if let Some(ev) = queue_it {
-            debug!(self.log, "{}breaker: fn {} retries an event (attempt {})", LP, fc.id, ev.attempt + 1);
+            debug!(self.log, "{}{}", LP, tr_lazy!("breaker.retry", id = fc.id, attempt = ev.attempt + 1));
             let (topic, fid) = (fc.to_topic(&ev), ev.fn_idp.clone().unwrap_or(RpFnId::fromf(fc)));
             self.queue.write().await.put_one(ev, topic, fid, true);
             self.respawn_drive();
@@ -213,7 +213,7 @@ impl RppdNodeCluster {
         tokio::spawn(async move {
             ctx.breaker_after(&fc, after).await;
             if let Some(ev) = probe {
-                info!(ctx.log, "{}breaker: fn {} has new code - probing it now", LP, fc.id);
+                info!(ctx.log, "{}{}", LP, tr!("breaker.new_code", id = fc.id));
                 let _ = ctx.sender.send(Some(ev)).await;
             }
         });
@@ -227,10 +227,10 @@ impl RppdNodeCluster {
             #[cfg(feature = "tracer")]
             self.metric_transition(fc.id, b.state.as_str());
             match t {
-                Transition::Opened => warn!(self.log, "{}breaker: fn {} OPEN (attempt {}, retry at {:?}): {}", LP, fc.id,
-                    b.attempt, b.until, b.last_error.clone().unwrap_or_default()),
-                Transition::HalfOpened => info!(self.log, "{}breaker: fn {} half-open: one probe", LP, fc.id),
-                Transition::Closed => info!(self.log, "{}breaker: fn {} closed, {} held event(s) drain", LP, fc.id, after.drain.len()),
+                Transition::Opened => warn!(self.log, "{}{}", LP, tr!("breaker.open", id = fc.id, attempt = b.attempt, until = format!("{:?}", b.until),
+                    err = b.last_error.clone().unwrap_or_default())),
+                Transition::HalfOpened => info!(self.log, "{}{}", LP, tr!("breaker.half_open", id = fc.id)),
+                Transition::Closed => info!(self.log, "{}{}", LP, tr!("breaker.closed", id = fc.id, n = after.drain.len())),
             }
             if *t != Transition::HalfOpened {
                 if let Some(q) = fc.notify_q.as_ref().filter(|q| !q.trim().is_empty()) {
@@ -244,7 +244,7 @@ impl RppdNodeCluster {
                     .bind(fc.id).bind(node).bind(b.state.as_str()).bind(b.since).bind(b.attempt as i32)
                     .bind(b.last_error.clone()).bind(*held as i32)
                     .execute(&self.db()).await {
-                    error!(self.log, "{}breaker: storing fn {}: {}", LP, fc.id, e);
+                    error!(self.log, "{}{}", LP, tr!("breaker.store", id = fc.id, err = e));
                 }
             }
         }
@@ -284,21 +284,20 @@ impl RppdNodeCluster {
     /// A message on a /q/ queue, as cadence sends them
     pub(crate) async fn put_q(&self, q: &str, fn_id: i32, body: String, what: &str) {
         if !is_queue(q) {
-            warn!(self.log, "{}breaker: fn {}: {} {} is not a /q/ queue, nothing sent", LP, fn_id, what, q);
+            warn!(self.log, "{}{}", LP, tr!("breaker.not_queue", id = fn_id, what = what, queue = q));
             return;
         }
         // [db-tag] in this instance's namespace
         let key = self.cfg.read().await.qkey(&producer_key(q, fn_id, Utc::now()));
         if let Err(e) = self.etcd.write().await.put(&key, body.into_bytes()).await {
-            error!(self.log, "{}breaker: put {}: {}", LP, key, e);
+            error!(self.log, "{}{}", LP, tr!("breaker.put", key = key, err = e));
         }
     }
 
     /// The event failed `max_attempts` times: its message, key, value and last error
     /// go to `dlq` (or only to the log without one)
     async fn dead_letter(&self, fc: &RpFn, f: &RpFnLog, attempts: u32) {
-        error!(self.log, "{}breaker: fn {} gives up on an event after {} attempt(s): {}", LP, fc.id, attempts,
-            f.error_msg.clone().unwrap_or_default());
+        error!(self.log, "{}{}", LP, tr!("breaker.give_up", id = fc.id, n = attempts, err = f.error_msg.clone().unwrap_or_default()));
         #[cfg(feature = "tracer")]
         self.metric_call(fc.id, "dead", None);
         if let Some(q) = fc.dlq.as_ref().filter(|q| !q.trim().is_empty()) {
@@ -332,7 +331,7 @@ impl RppdNodeCluster {
             sqlx::AssertSqlSafe(STATE_SELECT.replace("%SCHEMA%", schema.as_str())))
             .bind(node).fetch_all(&self.db()).await {
             Ok(r) => r,
-            Err(e) => { warn!(self.log, "{}breaker: reading rppd_function_state: {}", LP, e); return; }
+            Err(e) => { warn!(self.log, "{}{}", LP, tr!("breaker.read", err = e)); return; }
         };
         let fns = self.fns.read().await;
         let mut map = self.breakers.lock().unwrap();
@@ -344,7 +343,7 @@ impl RppdNodeCluster {
             }
             let b = Breaker::restored(State::parse(&state), since.unwrap_or_else(Utc::now), attempt.max(0) as u32,
                 last_error, &cfg);
-            info!(self.log, "{}breaker: fn {} restored {} until {:?}", LP, fn_id, b.state.as_str(), b.until);
+            info!(self.log, "{}{}", LP, tr!("breaker.restored", id = fn_id, state = b.state.as_str(), until = format!("{:?}", b.until)));
             map.insert(fn_id, BreakerRt { b, held: VecDeque::new(), timer: false });
         }
     }

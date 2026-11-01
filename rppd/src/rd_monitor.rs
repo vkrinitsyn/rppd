@@ -174,7 +174,7 @@ impl RppdNodeCluster {
     #[cfg(not(feature = "lib-embedded"))]
     pub(crate) async fn start_monitoring(&self) {
         let node_id = self.node_id.load(Ordering::Relaxed);
-        info!(self.log, "{}start_monitoring node {}", LP, node_id);
+        info!(self.log, "{}{}", LP, tr!("monitor.start", node = node_id));
         let (schema, table) = { let cfg = self.cfg.read().await;
             (cfg.schema.clone(), cfg.table.clone())
         };
@@ -247,20 +247,20 @@ impl RppdNodeCluster {
                                             let r = r.into_inner();
                                             if !r.is_master {  // discrepancy
                                                 errors += 1;
-                                                error!(self.log, "{}discrepancy on call master - replied: 'not a master'", LP);
+                                                error!(self.log, "{}{}", LP, tr!("monitor.not_master"));
                                             } else {
                                                 errors = 0;
                                             }
                                         }
                                         Err(e) => { // master having error
                                             errors += 1;
-                                            error!(self.log, "{}error on call master: {}", LP, e);
+                                            error!(self.log, "{}{}", LP, tr!("monitor.call", err = e));
                                         }
                                     }
                                 }
                                 Err(e) => { // master having error
                                     errors += 1;
-                                    error!(self.log, "{}no connection to master host: {}", LP, e);
+                                    error!(self.log, "{}{}", LP, tr!("monitor.no_conn", err = e));
                                 }
                             }
                         }
@@ -268,7 +268,7 @@ impl RppdNodeCluster {
                 }
                 Err(e) => { // scenarios: DB not available, no one marked as master: either wait a second than act
                     errors += 1;
-                    error!(self.log, "{}can't load master from db {}", LP, e);
+                    error!(self.log, "{}{}", LP, tr!("monitor.load", err = e));
                 }
             }
 
@@ -314,7 +314,7 @@ impl RppdNodeCluster {
 
         if let Some(master_id) = prev_db_master { // unregister previous master
             if let Ok(_ok) = sqlx::query(sqlx::AssertSqlSafe(sql_dwn)).bind(master_id).execute(&self.db()).await {
-                info!(self.log, "{}removed previous load master from DB row ID = {}", LP, master_id);
+                info!(self.log, "{}{}", LP, tr!("monitor.removed", id = master_id));
             }
         }
 
@@ -325,7 +325,7 @@ impl RppdNodeCluster {
                 self.master_id.store(node_id, Ordering::Relaxed);
             }
             Err(e) => {
-                error!(self.log, "{}marking self as master: {}", LP, e);
+                error!(self.log, "{}{}", LP, tr!("monitor.mark", err = e));
             }
         }
     }
@@ -336,7 +336,7 @@ impl RppdNodeCluster {
             let sql = crate::rd_fn::DELETE_LOG.replace("%SCHEMA%", self.cfg.read().await.schema.as_str());
 
             if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).execute(&self.db()).await {
-                error!(self.log, "{}Cleanup logs by [{}] {}", LP, sql, e);
+                error!(self.log, "{}{}", LP, tr!("monitor.cleanup", sql = sql, err = e));
             }
         }
     }

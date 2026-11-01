@@ -1,0 +1,7 @@
+# [i18n] rppd-common's messages in Simplified Chinese: one file per language, every key on the same
+# line in every file (src/i18n.rs tests it). rppd's own are in ../rppd/locales; an error's
+# message starts with its code, RPPD-Ennn, the same in every language
+_version: 1
+
+# the generated gRPC clients (build.rs puts i18n::not_ready in their code)
+grpc.not_ready: "RPPD-E160 服务尚未就绪：%{err}"

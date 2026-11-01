@@ -20,14 +20,13 @@ pub(crate) async fn upgrade(db: &Pool<Postgres>, db_url: &str, schema: &str, log
         where table_schema = $1 and table_name = 'rppd_function')")
         .bind(schema).fetch_one(db).await.unwrap_or(false);
     if !installed {
-        debug!(log, "{}schema: no {}.rppd_function - nothing to bring up to date", LP, schema);
+        debug!(log, "{}{}", LP, tr_lazy!("schema.none", schema = schema));
         return;
     }
     match migrate(db_url, schema).await {
-        Ok(0) => debug!(log, "{}schema: rppd's tables are up to date", LP),
-        Ok(n) => info!(log, "{}schema: rppd's tables brought up to date ({} change(s))", LP, n),
-        Err(e) => warn!(log, "{}schema: rppd's tables not brought up to date: {} - what their missing \
-            columns serve stays off", LP, e),
+        Ok(0) => debug!(log, "{}{}", LP, tr_lazy!("schema.current")),
+        Ok(n) => info!(log, "{}{}", LP, tr!("schema.updated", n = n)),
+        Err(e) => warn!(log, "{}{}", LP, tr!("schema.failed", err = e)),
     }
 }
 
@@ -36,8 +35,8 @@ pub(crate) async fn upgrade(db: &Pool<Postgres>, db_url: &str, schema: &str, log
 pub(crate) async fn migrate(db_url: &str, schema: &str) -> Result<usize, String> {
     let yaml = match yaml_rust2::YamlLoader::load_from_str(&crate::get_schema_def(schema)) {
         Ok(mut docs) if !docs.is_empty() => docs.remove(0),
-        Ok(_) => return Err("rppd.yaml is empty".to_string()),
-        Err(e) => return Err(format!("rppd.yaml: {}", e)),
+        Ok(_) => return Err(tr!("schema.empty")),
+        Err(e) => return Err(tr!("schema.yaml", err = e)),
     };
     let opt = schema_guard_tokio::MigrationOptions { exclude_triggers: true, without_failfast: true,
         ..Default::default() };

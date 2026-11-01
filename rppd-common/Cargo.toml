@@ -1,6 +1,6 @@
 [package]
 name = "rppd-common"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - protibuf types and services"
@@ -13,6 +13,9 @@ tonic-prost = { version = "^0.14" }
 prost = { version = "^0.14", default-features = false, features = ["derive"] }
 
 serde = { version = "^1.0", default-features = false, features = ["derive", "alloc"] }
+# the messages' language (src/i18n.rs), as rppd's - no bracketed i18n here: rust-i18n
+# takes any such text in this file for its config section
+rust-i18n = "4"
 
 [build-dependencies]
 tonic-prost-build = { version = "^0.14" }

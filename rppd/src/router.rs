@@ -44,7 +44,7 @@ impl RppdRouter {
         match r.metadata().get(DB_HEADER).and_then(|v| v.to_str().ok()).map(str::trim).filter(|v| !v.is_empty()) {
             None => Ok(self.default.clone()),
             Some(db) => self.tagged.read().await.get(db).cloned()
-                .ok_or_else(|| Status::not_found(format!("no rppd instance for database {} here", db))),
+                .ok_or_else(|| Status::not_found(tr!("router.no_db", db = db))),
         }
     }
 }

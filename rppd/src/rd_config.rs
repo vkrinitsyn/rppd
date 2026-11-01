@@ -82,10 +82,10 @@ impl RpHost {
         let path = format!("http://{}", self.host);
         RppdNodeClient::connect(Duration::from_millis(TIMEOUT_MS),
                             Endpoint::from_str(path.as_str())
-                                .map_err(|e| format!("connecting to {} {}", path, e))?)
+                                .map_err(|e| tr!("cfg.connect_path", path = path, err = e))?)
             .await
             .map(|c| Mutex::new(c))
-            .map_err(|e| format!("connecting {}", e))
+            .map_err(|e| tr!("cfg.connect", err = e))
     }
 }
 
@@ -206,6 +206,9 @@ pub struct RppdNodeCluster {
 pub(crate) struct WatcherW {
     pub(crate) sender: etcd_client::WatchRequestSender,
     pub(crate) watch_id: i64,
+    /// [q-dead] which watch stream this is: its reader watches again through
+    /// this sender only while it is still the queue's (`rd_etcd::consume_external`)
+    pub(crate) stream: u64,
 }
 
 #[cfg(not(feature = "etcd-external"))]
@@ -257,6 +260,13 @@ fn make_sql_cnd(input: &Vec<PkColumn>) -> String {
 /// `rppd_function.secret_names` only (py.rs).
 pub type SecretOpener = std::sync::Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>;
 
+/// [rotate-key] The host's check of a value presented to a function against a secret:
+/// (name, value) -> is it the secret's. While ytserv rotates the secret (`ytctl
+/// --rotate_key`) the old and the new value both are, and a match of the new one is
+/// its use there; compared by the host, in constant time. A function reaches it as
+/// `SECRET.check`, for the names it lists only (py.rs).
+pub type SecretChecker = std::sync::Arc<dyn Fn(&str, &[u8]) -> Result<bool, String> + Send + Sync>;
+
 pub enum ConfigurationRequest {
     #[cfg(feature = "tracer")] Tracer(Option<SdkTracer>),
     /// [otel] the host's meter for rppd's instruments (metrics.rs); `None` takes them away
@@ -264,6 +274,8 @@ pub enum ConfigurationRequest {
     Config(RppdConfig),
     /// [skv] the secret store's opener; `None` takes it away
     Secrets(Option<SecretOpener>),
+    /// [rotate-key] the secret store's check; `None` takes it away
+    SecretCheck(Option<SecretChecker>),
 }
 
 impl RppdNodeCluster {
@@ -286,6 +298,7 @@ impl RppdNodeCluster {
                 *self.cfg.write().await = cfg;
             }
             ConfigurationRequest::Secrets(o) => crate::py::set_secret_opener(o),
+            ConfigurationRequest::SecretCheck(c) => crate::py::set_secret_checker(c),
         }
         Ok(())
     }
@@ -376,7 +389,7 @@ impl RppdNodeCluster {
         }
 
         let r = r.fetch_all(&self.db()).await
-            .map_err(|e| format!("load functions [{}] {}", sql, e))?;
+            .map_err(|e| tr!("cfg.load_fns", sql = sql, err = e))?;
         let mut loaded = BTreeSet::new();
         for f in r {
             loaded.insert(RpFnId::fromf(&f));
@@ -414,8 +427,8 @@ impl RppdNodeCluster {
             }
         }
         self.fns.write().await.retain(|k, _v| loaded.contains(&RpFnId { id: *k, ..RpFnId::default() }));
-        info!(self.log, "{}loaded {} function(s) for {} table(s) and {} topic(s)", LP, self.fns.read().await.len(), self.fn_tt.read().await.len(), self.fn_id.read().await.len(), );
-        trace!(self.log, "{}loaded [{:?}] function(s) for [{:?}] table(s) and [{:?}] topic(s)", LP, self.fns.read().await, self.fn_tt.read().await, self.fn_id.read().await);
+        info!(self.log, "{}{}", LP, tr!("cfg.loaded", fns = self.fns.read().await.len(), tables = self.fn_tt.read().await.len(), topics = self.fn_id.read().await.len()));
+        trace!(self.log, "{}{}", LP, tr!("cfg.loaded_all", fns = format!("{:?}", self.fns.read().await), tables = format!("{:?}", self.fn_tt.read().await), topics = format!("{:?}", self.fn_id.read().await)));
         Ok(())
     }
 
@@ -430,7 +443,7 @@ impl RppdNodeCluster {
         let pool = PgPoolOptions::new()
             .max_connections(1)  // use only on init
             .connect(c.db_url().as_str()).await
-            .map_err(|e| format!("Connection error to: {} {}", c.db_url(), e))?;
+            .map_err(|e| tr!("cfg.connect_db", url = c.db_url(), err = e))?;
         // [breaker] an installed rppd's tables brought up to date from rppd.yaml
         crate::schema::upgrade(&pool, c.db_url().as_str(), c.schema.as_str(), &log).await;
         // getting cluster
@@ -441,7 +454,7 @@ impl RppdNodeCluster {
         let mut cfg_db = true;
         let r = match sqlx::query_as::<_, RpHost>(sqlx::AssertSqlSafe(sql.as_str()))
             .fetch_all(&pool).await
-            .map_err(|e| format!("Loading cluster of active nodes [{}]: {}", sql, e)) {
+            .map_err(|e| tr!("cfg.load_nodes", sql = sql, err = e)) {
             Ok(r) => r,
             Err(e) => {
                 warn!(log, "[py] {}", e);
@@ -449,7 +462,7 @@ impl RppdNodeCluster {
                 vec![]
             }
         };
-        debug!(log, "{}loaded {:?} for {}", LP, r, c.name);
+        debug!(log, "{}{}", LP, tr_lazy!("cfg.loaded_for", what = format!("{:?}", r), name = c.name));
         let mut master = false; // master is present and up
         let mut found_self = false; // is self registered
         let mut found_self_master = false; // is self registered
@@ -540,7 +553,7 @@ impl RppdNodeCluster {
 
         cluster.run(rsvr, cfg_rsvr, kv_rsvr, event_rsvr,
                     !found_self, !master && !found_self_master).await;
-        info!(cluster.log, "{}Cluster instance created", LP);
+        info!(cluster.log, "{}{}", LP, tr!("cfg.created"));
         Ok(cluster)
     }
 
@@ -557,7 +570,7 @@ impl RppdNodeCluster {
 
         tokio::spawn(async move { // will execute as background, but will try to connect to this host
             if let Err(e) = ctx.start_bg(self_register, self_master).await {
-                crit!(ctx.log, "[rppd] Failed to start server process: {}", e);
+                crit!(ctx.log, "[rppd] {}", tr!("cfg.start_failed", err = e));
             } else {
                 tokio::spawn(async move {
                     ctxm.start_monitoring().await;
@@ -646,7 +659,7 @@ impl RppdNodeCluster {
             Some(t) => t.clone(),
             None => return BTreeMap::new(),
         };
-        trace!(self.log, "found topics [{:?}] for {}", topics, table_name);
+        trace!(self.log, "{}", tr!("cfg.topics", topics = format!("{:?}", topics), table = table_name));
         let by_topic = self.fn_id.read().await;
         own_fns(table_name, &topics, &by_topic, &fns)
     }
@@ -700,6 +713,7 @@ impl RppdNodeCluster {
                         attempt: 0,
                         shaped: false,
                         parked: None,
+                        granted: None,
                         traceparent: Some(traceparent.to_string()).filter(|t| !t.is_empty()), // [otel]
                         trig_type: event as i32,
                         trig_value: Some(sqlx::types::Json::from(trig_value.clone())),
@@ -715,7 +729,7 @@ impl RppdNodeCluster {
         }
 
         if non_pk_column.len() > 0 {
-            trace!(self.log, "prepared to repeat {:?}", non_pk_column);
+            trace!(self.log, "{}", tr!("cfg.repeat", columns = format!("{:?}", non_pk_column)));
             return Ok(ScheduleResult::Repeat(non_pk_column));
         }
         let schema = &self.cfg.read().await.schema.clone();
@@ -743,7 +757,7 @@ impl RppdNodeCluster {
                 };
             }
         }
-        trace!(self.log, "prepared ok[{}]", res.len());
+        trace!(self.log, "{}", tr!("cfg.prepared", n = res.len()));
         Ok(ScheduleResult::Some(res))
     }
 
@@ -759,7 +773,7 @@ impl RppdNodeCluster {
         #[cfg(not(feature = "lib-embedded"))]
         {
             if insert {
-                info!(self.log, "{}Self registering: {} by name: {} {}", LP, host, name, if master { "as master" } else { "" });
+                info!(self.log, "{}{}", LP, if master { tr!("cfg.register_master", host = host, name = name) } else { tr!("cfg.register", host = host, name = name) });
                 let sql = INSERT_HOST
                     .replace("%SCHEMA%", schema.as_str())
                     .replace("%TABLE%", table.as_str());
@@ -768,15 +782,15 @@ impl RppdNodeCluster {
                     .bind(&name)
                     .bind(if master { Some(true) } else { None })
                     .fetch_one(&self.db()).await
-                    .map_err(|e| format!("self reg failed {}", e))?;
+                    .map_err(|e| tr!("cfg.register_failed", err = e))?;
 
                 self.node_id.store(id, Ordering::Relaxed);
-                info!(self.log, "{}Registered: {}", LP, host);
+                info!(self.log, "{}{}", LP, tr!("cfg.registered", host = host));
             }
             let id = self.node_id.load(Ordering::Relaxed);
 
             if !insert && master {
-                info!(self.log, "{}Self mark as master: {} by name: {} ", LP, host, name);
+                info!(self.log, "{}{}", LP, tr!("cfg.mark_master", host = host, name = name));
                 let sql = UP_MASTER
                     .replace("%SCHEMA%", schema.as_str())
                     .replace("%TABLE%", table.as_str());
@@ -800,7 +814,7 @@ impl RppdNodeCluster {
             }
         }
 
-        debug!(self.log, "{}loading functions", LP);
+        debug!(self.log, "{}{}", LP, tr_lazy!("cfg.loading_fns"));
         let _ = self.reload_fs(&None).await?;
         // [breaker] this node's open breakers as it left them
         self.breaker_restore().await;
@@ -812,7 +826,7 @@ impl RppdNodeCluster {
             self.queueing(l, false).await; // append loaded on startup
         }
 
-        debug!(self.log, "{}loading cron jobs", LP);
+        debug!(self.log, "{}{}", LP, tr_lazy!("cfg.loading_cron"));
         let _ = self.reload_cron(&None).await;
 
         // set STARTED
@@ -825,7 +839,7 @@ impl RppdNodeCluster {
     /// call by receive
     #[inline]
     async fn execute(&self, f: Option<RpFnLog>) {
-        trace!(self.log, "invoke {:?}", f);
+        trace!(self.log, "{}", tr!("cfg.invoke", what = format!("{:?}", f)));
         let (schema, db_url) = { let cfg = self.cfg.read().await;
             (cfg.schema.clone(), cfg.db_url.clone())
         };
@@ -878,7 +892,7 @@ impl RppdNodeCluster {
         let max_con_cfg = self.max_db_connections.load(Ordering::Relaxed);
         match self.fns.read().await.get(&f.fn_id) {
             None => {
-                error!(self.log, "{}no function by id: {}", LP, f.fn_id);
+                error!(self.log, "{}{}", LP, tr!("cfg.no_fn", id = f.fn_id));
             }
             Some(fc) => {
                 // [shaper] within the function's limit and rate cap, then [breaker]
@@ -916,11 +930,12 @@ impl RppdNodeCluster {
                 let p = match c {
                     None => {
                         let p = match self.new_py_context(&fc).await
-                            .map_err(|e| format!("connecting python to {}: {}", &db_url, e)) {
+                            .map_err(|e| tr!("cfg.connect_py", url = &db_url, err = e)) {
                             Ok(p) => p,
                             Err(e) => {
                                 self.breaker_undo(fc.id); // [breaker] not run after all
                                 self.shaper_undo(fc).await;
+                                error!(self.log, "{}{}", LP, e);
                                 f.update_err(e, self.db(), &schema, &self.log).await;
                                 return;
                             }
@@ -930,6 +945,9 @@ impl RppdNodeCluster {
                     }
                     Some(p) => p
                 };
+                // [shaper] it starts now: a token taken earlier - a context made
+                // on the way - is dated here
+                self.shaper_started(&fc, &f);
                 self.running.fetch_add(1, Ordering::Relaxed);
 
                 // thread this >
@@ -965,14 +983,14 @@ impl RppdNodeCluster {
                     // [breaker] the etcd message is acknowledged once the event is
                     // done with (breaker_done): a retried one is not yet
                     match &r {
-                        Ok(_) => debug!(log, "{}executed OK! {} {}", LP, fc.schema_table, fc.topic),
+                        Ok(_) => debug!(log, "{}{}", LP, tr_lazy!("cfg.ran", table = fc.schema_table, topic = fc.topic)),
                         Err(e) => {
                             #[cfg(feature = "tracer")] {
                                 let event = e.clone();
                                 let _ = s.as_mut()
                                     .map(|s| s.add_event(event, vec![]));
                             }
-                            error!(log, "{}executed notOK#{} {} {}", LP, fc.schema_table, fc.topic, e)
+                            error!(log, "{}{}", LP, tr!("cfg.run_failed", table = fc.schema_table, topic = fc.topic, err = e))
                         },
                     }
                     
@@ -1001,7 +1019,7 @@ impl RppdNodeCluster {
     // TODO link the queue (if use) to the node, if that node no longer available, than link to another one
     #[inline]
     pub(crate) async fn queueing(&self, l: RpFnLog, push_back: bool) {
-        trace!(self.log, "queueing {:?}", l);
+        trace!(self.log, "{}", tr!("cfg.queueing", what = format!("{:?}", l)));
         let (topic, fn_id, tbl) = if let Some(f) = self.fns.read().await.get(&l.fn_id) {
             (f.to_topic(&l), l.fn_idp.to_owned().unwrap_or(RpFnId::fromf(f)), f.schema_table.clone())
         } else { ("".to_string(), RpFnId::default(), "".to_string()) }; // should not happens

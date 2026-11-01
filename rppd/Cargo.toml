@@ -1,7 +1,7 @@
 
 [package]
 name = "rppd"
-version = "0.2.16"
+version = "0.2.17"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - Rust Python Postgres"
@@ -35,7 +35,9 @@ thiserror = "2"
 # glibc 2.31 package on Ubuntu 20.04, whose python3 is 3.8 (ytcluster_dist, 2026-10-20)
 pyo3 = { version = "^0.29", features = ["auto-initialize", "uuid"] }
 
-etcds = {version = "^0.21"}
+# ^0.22.1: etcd's sibling checkout went to 0.22.1 (owner, 2026-10-29); since 0.21.4 the queue
+# registry by stream, and the ETCD-E052 cancel `consume` watches again after
+etcds = {version = "^0.23.0"}
 etcd-client = { version = "^0.21", optional = true}
 
 sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "chrono"] }
@@ -52,6 +54,11 @@ yaml-rust2 = { version = "^0.13", default-features = false }
 opentelemetry_sdk = { version = "^0.33", features = ["rt-tokio", "trace"], optional = true }
 opentelemetry = { version = "^0.33", features = ["trace", "metrics"], optional = true }
 
+
+[dev-dependencies]
+# [q-dead] the etcd-external path's test builds etcd-client's own responses and
+# request sender (rd_etcd.rs, external_tests)
+etcd-client = { version = "^0.21", features = ["pub-response-field", "build-server"] }
 
 [features]
 default = ["etcd-embeded"]

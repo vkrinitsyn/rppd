@@ -64,6 +64,7 @@ fn release(rt: &mut ShaperRt, now: DateTime<Utc>, cfg: &shaper::Cfg, after: &mut
             Ok(()) => {
                 let mut ev = rt.waiting.pop_front().unwrap();
                 ev.shaped = true;
+                ev.granted = Some(Instant::now()); // [shaper] its token, taken now
                 after.release.push(ev);
             }
             Err(Wait::Rate(at)) => {
@@ -102,7 +103,7 @@ impl RppdNodeCluster {
             let parked = |mut f: RpFnLog| { f.parked = Some(Instant::now()); f };
             let run = if rt.waiting.is_empty() {
                 match shaper::ready(&mut rt.s, now, &cfg) {
-                    Ok(()) => Some(f),
+                    Ok(()) => Some(RpFnLog { granted: Some(Instant::now()), ..f }), // [shaper] its token, taken now
                     Err(Wait::Rate(at)) => {
                         rt.waiting.push_back(parked(f));
                         if !rt.wake { rt.wake = true; after.wake_at = Some(at); }
@@ -147,6 +148,22 @@ impl RppdNodeCluster {
         self.shaper_after(&fc, after).await;
     }
 
+    /// [shaper] The call starts now: its token, taken at the gate, is dated here
+    /// (`shaper::started_late`) - the next start is a full interval after it
+    pub(crate) fn shaper_started(&self, fc: &RpFn, f: &RpFnLog) {
+        // no token taken (not shaped): nothing to date
+        if f.granted.is_none() {
+            return;
+        }
+        let cfg = fc.shaper_cfg();
+        if cfg.rate_per_sec == 0 {
+            return;
+        }
+        if let Some(rt) = self.shapers.lock().unwrap().get_mut(&fc.id) {
+            shaper::started_late(&mut rt.s, Utc::now(), &cfg);
+        }
+    }
+
     /// A call that took a slot never ran (the breaker held it, or no Python context)
     pub(crate) async fn shaper_undo(&self, fc: &RpFn) {
         let cfg = fc.shaper_cfg();
@@ -163,7 +180,7 @@ impl RppdNodeCluster {
     async fn shaper_after(&self, fc: &RpFn, after: After) {
         let node = self.node_id.load(Ordering::Relaxed);
         for (n, queued) in after.notices {
-            info!(self.log, "{}shaper: fn {} {:?} ({} waiting)", LP, fc.id, n, queued);
+            info!(self.log, "{}{}", LP, tr!("shaper.limit", id = fc.id, change = format!("{:?}", n), waiting = queued));
             if let Some(q) = fc.notify_q.as_ref().filter(|q| !q.trim().is_empty()) {
                 let body = {
                     let map = self.shapers.lock().unwrap();
@@ -179,12 +196,12 @@ impl RppdNodeCluster {
                 let schema = self.cfg.read().await.schema.clone();
                 if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(LIMIT_UPSERT.replace("%SCHEMA%", schema.as_str())))
                     .bind(fc.id).bind(node).bind(limit as i32).execute(&self.db()).await {
-                    error!(self.log, "{}shaper: storing fn {}'s limit: {}", LP, fc.id, e);
+                    error!(self.log, "{}{}", LP, tr!("shaper.store", id = fc.id, err = e));
                 }
             }
         }
         for ev in after.release {
-            debug!(self.log, "{}shaper: fn {} releases a waiting call", LP, fc.id);
+            debug!(self.log, "{}{}", LP, tr_lazy!("shaper.release", id = fc.id));
             #[cfg(feature = "tracer")]
             if let Some(at) = ev.parked {
                 self.metric_shaper_wait(fc.id, at.elapsed()); // [otel]

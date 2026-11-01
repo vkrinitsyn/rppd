@@ -142,6 +142,26 @@ pub(crate) fn ready(s: &mut Shaper, now: DateTime<Utc>, cfg: &Cfg) -> Result<(),
     Ok(())
 }
 
+/// [shaper] A call that started `late` after its token was taken - the token
+/// dated at its start instead: what accrued in between is given back, so the
+/// next call starts a full interval after this one began.
+///
+/// The token is taken at the gate, and the call starts once it has a Python
+/// context - which the first call on a node makes on the way (a database
+/// connection, an etcd client: ~100 ms and more). Counted from the gate, the
+/// next start came that much early: 2 per second measured from the starts
+/// was 370 ms between the first two (topology 92d D2).
+///
+/// The bucket is dated, not the token: what accrued up to the start is dropped once,
+/// however many calls start late together - each giving back its own lateness gave
+/// the same interval back once per call, burst > 1 slower than its cap (review of
+/// 2026-10-27).
+pub(crate) fn started_late(s: &mut Shaper, started: DateTime<Utc>, cfg: &Cfg) {
+    if cfg.rate_per_sec > 0 && s.refilled.is_some_and(|r| started > r) {
+        s.refilled = Some(started);
+    }
+}
+
 /// A transition the shaper reports to notify_q
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Notice {
@@ -335,6 +355,44 @@ mod tests {
         // 10 s idle refills only up to the burst
         assert_eq!(ready(&mut s, t(10_500), &c), Ok(()));
         assert!(ready(&mut s, t(10_501), &c).is_err());
+    }
+
+    /// [shaper] A call that started late after its grant - its first Python
+    /// context made on the way - dates its token at its start: the next call
+    /// starts a full interval after that, not after the grant.
+    #[test]
+    fn a_call_that_starts_late_dates_its_token_at_its_start() {
+        let c = Cfg { max_parallel: 0, min_parallel: 1, target_ms: 0, rate_per_sec: 2, burst: 1, max_backlog: 0 };
+        let mut s = Shaper::new(&c);
+        assert_eq!(ready(&mut s, t(0), &c), Ok(()));
+        started_late(&mut s, t(130), &c); // it started at 130 ms
+        match ready(&mut s, t(500), &c) {
+            Err(Wait::Rate(at)) => assert!((at - t(630)).num_microseconds().unwrap().abs() <= 1, "{}", at),
+            x => panic!("not yet at 500 ms: {:?}", x),
+        }
+        assert_eq!(ready(&mut s, t(631), &c), Ok(()), "500 ms after its start");
+        // no rate cap: nothing to date
+        let free = Cfg { rate_per_sec: 0, ..c };
+        let mut f = Shaper::new(&free);
+        started_late(&mut f, t(5000), &free);
+        assert_eq!(ready(&mut f, t(0), &free), Ok(()));
+    }
+
+    /// [shaper] Two calls of a burst that start late together give the interval back
+    /// once: the next token is due a full interval after their start, not two
+    #[test]
+    fn calls_that_start_late_together_give_their_interval_back_once() {
+        let c = Cfg { max_parallel: 0, min_parallel: 1, target_ms: 0, rate_per_sec: 2, burst: 2, max_backlog: 0 };
+        let mut s = Shaper::new(&c);
+        assert_eq!(ready(&mut s, t(0), &c), Ok(()));
+        assert_eq!(ready(&mut s, t(0), &c), Ok(()));
+        started_late(&mut s, t(130), &c);
+        started_late(&mut s, t(130), &c);
+        match ready(&mut s, t(500), &c) {
+            Err(Wait::Rate(at)) => assert!((at - t(630)).num_microseconds().unwrap().abs() <= 1, "{}", at),
+            x => panic!("not yet at 500 ms: {:?}", x),
+        }
+        assert_eq!(ready(&mut s, t(631), &c), Ok(()), "one interval after their start, not two");
     }
 
     #[test]

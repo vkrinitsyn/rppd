@@ -40,7 +40,7 @@ impl RppdNode for RppdNodeCluster {
         // the message has, which its acknowledgement deletes
         let qn = QueueNameKey::new(self.cfg.read().await.unqkey(&request.key));
 
-        trace!(self.log, "get notify on {}", &request.key);
+        trace!(self.log, "{}", tr!("rpc.notify", key = &request.key));
         // [cadence] the pp watching this queue saw a message
         self.cadence_seen(qn.name().as_str()).await;
 
@@ -58,7 +58,7 @@ impl RppdNode for RppdNodeCluster {
                 }
             }
         } else {
-            debug!(self.log, "{}no consumer for {}", LP, &request.key);
+            debug!(self.log, "{}{}", LP, tr_lazy!("rpc.no_consumer", key = &request.key));
         }
 
         Ok(Response::new(MessageResponse { }))
@@ -137,7 +137,7 @@ impl RppdNodeCluster {
                 if request.optional_caller.is_some() {
                     Ok(Response::new(DbEventResponse { saved: false, repeat_with: vec![] })) // tell master, node is not ready
                 } else {
-                    Err(Status::internal("not a master"))
+                    Err(Status::internal(tr!("rpc.not_started", table = format!("{}.{}", schema, CFG_TABLE))))
                 }
             };
         }
@@ -151,7 +151,7 @@ impl RppdNodeCluster {
                     }
                 }
                 ScheduleResult::Repeat(repeat_with) => {
-                    info!(self.log, "{}re-requesting to repeat: {:?}", LP, repeat_with);
+                    info!(self.log, "{}{}", LP, tr!("rpc.repeat", what = format!("{:?}", repeat_with)));
                     return Ok(Response::new(DbEventResponse { saved: false, repeat_with }));
                 }
             }
@@ -197,7 +197,7 @@ impl RppdNodeCluster {
         let (master, host) = match sqlx::query_as::<_, (i32, String)>(sqlx::AssertSqlSafe(sql.as_str())).fetch_optional(&self.db()).await {
             Ok(Some(row)) => row,
             Ok(None) => return None,
-            Err(e) => { warn!(self.log, "{}forward to master: {}", LP, e); return None; }
+            Err(e) => { warn!(self.log, "{}{}", LP, tr!("rpc.forward", err = e)); return None; }
         };
         let me = self.node_id.load(Ordering::Relaxed);
         if master == me {
@@ -213,7 +213,7 @@ impl RppdNodeCluster {
                 active_since: None, master: Some(true), max_db_connections: 0 };
             match h.connect().await {
                 Ok(c) => { self.node_connections.write().await.insert(master, Ok(c)); }
-                Err(e) => { warn!(self.log, "{}forward to master {} at {}: {}, running here", LP, master, host, e); return None; }
+                Err(e) => { warn!(self.log, "{}{}", LP, tr!("rpc.forward_at", master = master, host = host, err = e)); return None; }
             }
         }
         let forwarded = DbEventRequest {
@@ -222,18 +222,18 @@ impl RppdNodeCluster {
         };
         let r = match self.node_connections.read().await.get(&master) {
             Some(Ok(node)) => node.lock().await.event(self.peer(forwarded).await).await,
-            _ => { warn!(self.log, "{}forward to master {}: no connection, running here", LP, master); return None; }
+            _ => { warn!(self.log, "{}{}", LP, tr!("rpc.forward_none", master = master)); return None; }
         };
         match r {
             Ok(resp) => Some(Ok(resp)),
-            Err(e) => { warn!(self.log, "{}forward to master {}: {}, running here", LP, master, e); None }
+            Err(e) => { warn!(self.log, "{}{}", LP, tr!("rpc.forward_err", master = master, err = e)); None }
         }
     }
 
     async fn status_impl(&self, request: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
         let r = request.into_inner();
         if !self.started.load(Ordering::Relaxed) {
-            Err(Status::unavailable("starting"))
+            Err(Status::unavailable(tr!("rpc.starting")))
         } else {
             if r.node_id == self.node_id.load(Ordering::Relaxed)
                 || (r.node_id < 0 && !self.node_connections.read().await.contains_key(&r.node_id))
@@ -254,10 +254,10 @@ impl RppdNodeCluster {
                 if let Some(node) = self.node_connections.read().await.get(&r.node_id) {
                     match node {
                         Ok(n) => n.lock().await.status(self.peer(r).await).await,
-                        Err(e) => Err(Status::unavailable(format!("on call: {}", e)))
+                        Err(e) => Err(Status::unavailable(tr!("rpc.call", err = e)))
                     }
                 } else {
-                    Err(Status::unavailable(format!("no such node: {}", r.node_id)))
+                    Err(Status::unavailable(tr!("rpc.no_node", node = r.node_id)))
                 }
             }
         }

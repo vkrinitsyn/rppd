@@ -277,7 +277,7 @@ impl RppdNodeCluster {
             let schema = self.cfg.read().await.schema.clone();
             if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(SEEN_SQL.replace("%SCHEMA%", schema.as_str())))
                 .bind(now).bind(queue).execute(&self.db()).await {
-                debug!(self.log, "{}cadence: last_seen of {}: {}", LP, queue, e);
+                debug!(self.log, "{}{}", LP, tr_lazy!("cadence.last_seen", queue = queue, err = e));
             }
         }
     }
@@ -302,7 +302,7 @@ impl RppdNodeCluster {
             sqlx::AssertSqlSafe(STORED_SQL.replace("%SCHEMA%", schema.as_str()))).fetch_all(&db).await {
             Ok(rows) => Some(rows.into_iter().map(|(id, state, since, attempt, last_seen)|
                 (id, Stored { state: CState::parse(state.as_str()), since, attempt, last_seen })).collect()),
-            Err(e) => { debug!(self.log, "{}cadence: reading the stored rows: {}", LP, e); None }
+            Err(e) => { debug!(self.log, "{}{}", LP, tr_lazy!("cadence.read", err = e)); None }
         };
         let seen: HashMap<String, DateTime<Utc>> = {
             let s = match self.cadence_seen.lock() { Ok(s) => s, Err(p) => p.into_inner() };
@@ -317,18 +317,18 @@ impl RppdNodeCluster {
         {
             let mut cron = self.cron.write().await;
             if cron.new_term(epoch) {
-                info!(self.log, "{}cadence: master (term {}): the runtimes start from the stored rows", LP, epoch);
+                info!(self.log, "{}{}", LP, tr!("cadence.master", term = epoch));
             }
             let baseline = cron.started;
             for (id, c) in cron.crons.iter_mut().filter(|(_, c)| c.cadence) {
                 let queue = match queues.get(&c.fn_id) {
                     Some(q) if is_queue(q) => q.clone(),
                     Some(q) => {
-                        self.cadence_err(&db, &schema, *id, format!("cadence: function {} consumes {}, not a /q/ queue", c.fn_id, q)).await;
+                        self.cadence_err(&db, &schema, *id, tr!("cadence.not_queue_fn", id = c.fn_id, queue = q)).await;
                         continue;
                     }
                     None => {
-                        self.cadence_err(&db, &schema, *id, format!("cadence: no function {}", c.fn_id)).await;
+                        self.cadence_err(&db, &schema, *id, tr!("cadence.no_fn", id = c.fn_id)).await;
                         continue;
                     }
                 };
@@ -340,7 +340,7 @@ impl RppdNodeCluster {
                 let before = st.clone();
                 match step(c.cron.as_str(), c.watch_min, c.retry_sec, &mut st, now, baseline) {
                     Err(e) => {
-                        self.cadence_err(&db, &schema, *id, format!("cadence: cron [{}]: {}", c.cron, e)).await;
+                        self.cadence_err(&db, &schema, *id, tr!("cadence.cron", cron = c.cron, err = e)).await;
                         continue;
                     }
                     Ok(None) => {}
@@ -350,13 +350,12 @@ impl RppdNodeCluster {
                         // `since` before the transition, for the ok message's down time
                         let mut cc = c.clone();
                         cc.since = before.since;
-                        info!(self.log, "{}cadence: pp {} on {} {} -> {} (attempt {})", LP, id, queue,
-                            before.state.as_str(), st.state.as_str(), st.attempt);
+                        info!(self.log, "{}{}", LP, tr!("cadence.pp", id = id, queue = queue, from = before.state.as_str(), to = st.state.as_str(), attempt = st.attempt));
                         if let Some(q) = q {
                             if is_queue(q.as_str()) {
                                 out.push((producer_key(q.as_str(), *id, now), body(&cc, queue.as_str(), &st, &emit, now, baseline)));
                             } else {
-                                warn!(self.log, "{}cadence: pp {}: {} is not a /q/ queue, nothing sent", LP, id, q);
+                                warn!(self.log, "{}{}", LP, tr!("cadence.not_queue", id = id, queue = q));
                             }
                         }
                     }
@@ -365,7 +364,7 @@ impl RppdNodeCluster {
                     if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(STATE_SQL.replace("%SCHEMA%", schema.as_str())))
                         .bind(*id).bind(st.state.as_str()).bind(st.since).bind(st.attempt).bind(st.last_seen)
                         .execute(&db).await {
-                        error!(self.log, "{}cadence: storing pp {}: {}", LP, id, e);
+                        error!(self.log, "{}{}", LP, tr!("cadence.store", id = id, err = e));
                     }
                 } else if c.error_msg.is_some() {
                     let _ = sqlx::query(sqlx::AssertSqlSafe(NO_ERR_SQL.replace("%SCHEMA%", schema.as_str())))
@@ -379,7 +378,7 @@ impl RppdNodeCluster {
             // [db-tag] in this instance's namespace
             let key = self.cfg.read().await.qkey(&key);
             if let Err(e) = self.etcd.write().await.put(&key, value.into_bytes()).await {
-                error!(self.log, "{}cadence: put {}: {}", LP, key, e);
+                error!(self.log, "{}{}", LP, tr!("cadence.put", key = key, err = e));
             }
         }
     }
@@ -388,7 +387,7 @@ impl RppdNodeCluster {
         debug!(self.log, "{}{}", LP, msg);
         if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(ERR_SQL.replace("%SCHEMA%", schema)))
             .bind(id).bind(msg).execute(db).await {
-            error!(self.log, "{}cadence: storing an error of pp {}: {}", LP, id, e);
+            error!(self.log, "{}{}", LP, tr!("cadence.store_err", id = id, err = e));
         }
     }
 }

@@ -3,7 +3,6 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use crate::rd_config::RppdNodeCluster;
-use rust_i18n::t;
 use slog::{crit, info};
 use tonic::transport::Server;
 use tonic::transport::server::Router;
@@ -11,7 +10,11 @@ use rppd_common::protogen::rppd::rppd_node_server::*;
 use rppd_common::protogen::rppd::SwitchRequest;
 use rppd_common::protogen::rppg::rppd_trigger_server::RppdTriggerServer;
 
-rust_i18n::i18n!("locales");
+rust_i18n::i18n!("locales", fallback = "en");
+
+/// [i18n] the messages' language, and tr! - first, so every module below has the macro
+#[macro_use]
+pub mod i18n;
 
 pub mod arg_config;
 
@@ -69,10 +72,21 @@ pub async fn ensure_schema(db_url: &str, schema: &str) -> Result<usize, String> 
     schema::migrate(db_url, schema).await
 }
 
+/// [q-dead] How often a served connection is probed, over HTTP/2 and TCP.
+const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+/// [q-dead] How long a probe may go unanswered before the connection is closed.
+const KEEPALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 impl RppdNodeCluster {
     /// called by main.rs
     pub async fn serve(&self) -> Result<(), String> {
+        // [q-dead] keepalive: the embedded etcd frees what a queue consumer was
+        // handed only when its stream closes, and a client whose host died or
+        // was cut off leaves it half open (etcds agent.md, "Queues")
         let srv = Server::builder()
+            .http2_keepalive_interval(Some(KEEPALIVE))
+            .http2_keepalive_timeout(Some(KEEPALIVE_TIMEOUT))
+            .tcp_keepalive(Some(KEEPALIVE))
             .add_service(RppdNodeServer::new(self.clone()))
             .add_service(RppdTriggerServer::new(self.clone()));
 
@@ -93,26 +107,26 @@ impl RppdNodeCluster {
         
         let bind = adr[0];
         let adr = if bind.chars().next().unwrap_or(' ').is_numeric() {
-            addrsv[0].parse::<SocketAddr>().map_err(|e| format!("parsing {}: {}", bind, e))?
+            addrsv[0].parse::<SocketAddr>().map_err(|e| tr!("lib.bind", bind = bind, err = e))?
         } else {
-            let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(format!("Binding to {}", bind).as_str()).collect();
+            let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(&tr!("lib.lookup", bind = bind)).collect();
             if ips.len() == 0 {
-                return Err(format!("{}No IpAddr found {}", LP, bind));
+                return Err(format!("{}{}", LP, tr!("lib.no_ip", bind = bind)));
             }
             SocketAddr::new(ips[0], port)
         };
 
-        #[cfg(feature = "etcd-embeded")] info!(self.log, "Starting RPPD&ETCD server [{}] at: {}", name, bind);
-        #[cfg(not(feature = "etcd-embeded"))] info!(self.log, "Starting RPPD server [{}] at: {}", name, bind);
+        #[cfg(feature = "etcd-embeded")] info!(self.log, "{}", tr!("lib.start_etcd", name = name, bind = bind));
+        #[cfg(not(feature = "etcd-embeded"))] info!(self.log, "{}", tr!("lib.start", name = name, bind = bind));
         let log = self.log.clone();
         tokio::spawn(async move {
             match srv.serve(adr) // .serve_with_incoming_shutdown(uds_stream, rx.map(drop) )
                 .await {
                 Ok(()) => {
-                    info!(log, "{}bye", LP);
+                    info!(log, "{}{}", LP, tr!("lib.bye"));
                 }
                 Err(e) => {
-                    crit!(log, "{} {}", t!("error"), e);
+                    crit!(log, "{}", tr!("lib.serve", err = e));
                 }
             }
         });
@@ -144,10 +158,10 @@ impl RppdNodeCluster {
             #[allow(unused_mut)]
             let mut w = w;
             if let Err(e) = w.cancel().await {
-                slog::warn!(self.log, "{}stop: the watcher of {} not cancelled: {}", LP, q, e);
+                slog::warn!(self.log, "{}{}", LP, tr!("lib.unwatch", queue = q, err = e));
             }
         }
-        slog::info!(self.log, "{}stopped", LP);
+        slog::info!(self.log, "{}{}", LP, tr!("lib.stopped"));
     }
 
     /// [db-tag] A request to a peer, carrying this instance's database when it is a
@@ -170,7 +184,7 @@ impl RppdNodeCluster {
             self.master_epoch.fetch_add(1, Ordering::Relaxed);
         }
         if was != master {
-            info!(self.log, "{}master follows cluster leader: {} -> {}", LP, was, master);
+            info!(self.log, "{}{}", LP, tr!("lib.follow", was = was, now = master));
         }
         was != master
     }
@@ -181,7 +195,7 @@ impl RppdNodeCluster {
     }
 
     /// Whether this instance has started: connected, registered and its functions
-    /// loaded. An event that comes before is refused ("not a master"), so an
+    /// loaded. An event that comes before is refused (RPPD-E122 "not started"), so an
     /// embedder waits for this before it says the instance is up.
     pub fn is_started(&self) -> bool {
         self.started.load(Ordering::Relaxed)
@@ -196,7 +210,7 @@ impl RppdNodeCluster {
                 if k != &node_id { // in case of self link
                     if let Ok(node) = n {
                         if let Ok(x) = node.lock().await.switch(self.peer(SwitchRequest { node_id }).await).await {
-                            info!(self.log, "{} {:?}", t!("rppd-switch", from = node_id.to_string(), to = k.to_string()), x);
+                            info!(self.log, "{} {:?}", tr!("lib.switch", from = node_id.to_string(), to = k.to_string()), x);
                             break;
                         }
                     }

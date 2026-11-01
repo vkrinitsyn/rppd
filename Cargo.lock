@@ -660,13 +660,14 @@ dependencies = [
  "tonic-prost-build",
  "tower",
  "tower-service",
+ "visible",
 ]
 
 [[package]]
 name = "etcds"
-version = "0.21.2"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d215256feabc423e6da6dc8d89d053a34226b6f69230e04aed84e54529664a21"
+checksum = "a79a27ceb5398e4609b17a755f6cf8e7ed0127b2a5fdfbeb2e9efd6ec453270e"
 dependencies = [
  "clap",
  "dns-lookup",
@@ -1840,9 +1841,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.4"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e"
+checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
 dependencies = [
  "bitflags 2.13.2",
  "memchr",
@@ -2029,7 +2030,7 @@ checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
 
 [[package]]
 name = "rppd"
-version = "0.2.16"
+version = "0.2.17"
 dependencies = [
  "async-trait",
  "bb8-postgres",
@@ -2060,10 +2061,11 @@ dependencies = [
 
 [[package]]
 name = "rppd-common"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "prost",
+ "rust-i18n",
  "serde",
  "tonic",
  "tonic-prost",
@@ -3225,6 +3227,16 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "visible"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a044005fd5c0fc1ebd79c622e5606431c6b879a6a19acafb754be9926a2de73e"
+dependencies = [
+ "quote",
+ "syn 1.0.109",
+]
 
 [[package]]
 name = "walkdir"

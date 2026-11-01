@@ -63,7 +63,7 @@ impl RpFnCron {
             .bind(self.id)
             .bind(Some(msg))
             .execute(db).await {
-            error!(log, "{}{}", LP, e);
+            error!(log, "{}{}", LP, tr!("cron.store_err", err = e));
         }
 
         Ok(())
@@ -75,7 +75,7 @@ impl RpFnCron {
         if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(self.id)
             .execute(db).await {
-            error!(log, "{}{}", LP, e);
+            error!(log, "{}{}", LP, tr!("cron.clear_err", err = e));
         }
 
         Ok(())
@@ -102,7 +102,7 @@ impl RpFnCron {
         if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(self.id)
             .execute(db).await {
-            error!(log, "{}starting cron job with SQL: {} raise error: {}", LP, sql, e);
+            error!(log, "{}{}", LP, tr!("cron.start", sql = sql, err = e));
             return None;
         }
 
@@ -136,7 +136,7 @@ impl RpFnCron {
             }
         }
         {
-            error!(log, "{}finishing cron job SQL: {}, raise error{}", LP, esql, e);
+            error!(log, "{}{}", LP, tr!("cron.finish", sql = esql, err = e));
         }
         self.finished_at = Some(Utc::now());
         Some(self.cron.clone())
@@ -243,7 +243,7 @@ impl CronContext {
             Err(first) => {
                 // [cadence] a table from before the cadence columns, which SchemaGuard
                 // did not bring up to date at startup (schema.rs): cron runs alone
-                warn!(self.log, "{}cadence off: rppd_cron lacks its columns ({})", LP, first);
+                warn!(self.log, "{}{}", LP, tr!("cron.cadence_off", first = first));
                 self.cadence_on = false;
                 sqlx::query_as::<_, RpFnCron>(sqlx::AssertSqlSafe(SELECT_CRON_LEGACY.replace("%SCHEMA%", schema.as_str())))
                     .fetch_all(&db).await.map_err(|e| e.to_string())?
@@ -276,7 +276,7 @@ impl CronContext {
                     }
                 }
                 Err(e) => {
-                    let _ = c.update_err(&db, format!("parsing cron#[{}]: {} error: {}", c.id, c.cron, e), &schema, &self.log).await;
+                    let _ = c.update_err(&db, tr!("cron.parse", id = c.id, cron = c.cron, err = e), &schema, &self.log).await;
                 }
             }
         }

@@ -137,7 +137,7 @@ pub mod rppd_node_client {
                 .await
                 .map_err(|e| {
                     tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
+                        crate::i18n::not_ready(e.into()),
                     )
                 })?;
             let codec = tonic_prost::ProstCodec::default();
@@ -159,7 +159,7 @@ pub mod rppd_node_client {
                 .await
                 .map_err(|e| {
                     tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
+                        crate::i18n::not_ready(e.into()),
                     )
                 })?;
             let codec = tonic_prost::ProstCodec::default();
@@ -178,7 +178,7 @@ pub mod rppd_node_client {
                 .await
                 .map_err(|e| {
                     tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
+                        crate::i18n::not_ready(e.into()),
                     )
                 })?;
             let codec = tonic_prost::ProstCodec::default();
@@ -197,7 +197,7 @@ pub mod rppd_node_client {
                 .await
                 .map_err(|e| {
                     tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
+                        crate::i18n::not_ready(e.into()),
                     )
                 })?;
             let codec = tonic_prost::ProstCodec::default();
@@ -219,7 +219,7 @@ pub mod rppd_node_client {
                 .await
                 .map_err(|e| {
                     tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
+                        crate::i18n::not_ready(e.into()),
                     )
                 })?;
             let codec = tonic_prost::ProstCodec::default();

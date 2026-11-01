@@ -4,7 +4,7 @@ extern crate core;
 #[macro_use]
 extern crate slog;
 
-rust_i18n::i18n!("locales");
+rust_i18n::i18n!("locales", fallback = "en");
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -12,7 +12,6 @@ use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use bb8_postgres::tokio_postgres::GenericClient;
 
-use rust_i18n::t;
 use slog::Logger;
 use sloggers::Build;
 use sloggers::terminal::{Destination, TerminalLoggerBuilder};
@@ -36,11 +35,15 @@ compile_error!("only etcd-embeded or etcd-external feature can be enabled at thi
 #[cfg(not(feature = "lib-embedded"))]
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]
 async fn main() -> ExitCode {
+    // [i18n] the messages' language: LC_ALL, LC_MESSAGES or LANG, as ytserv and ytctl take
+    // theirs (src/i18n.rs); inside ytserv rppd follows the node's (its set_lang). The
+    // embedded etcd's in the same one: it reads LANG alone
+    etcds::set_lang(&rppde::i18n::lang());
     let log = logger(true);
 
-    let app_name = t!("rppd-name");
+    let app_name = rppde::tr!("main.name");
     info!(log, "{} {}", app_name, env!("CARGO_PKG_VERSION"));
-    info!(log, "{}", t!("rppd-about"));
+    info!(log, "{}", rppde::tr!("main.about"));
 
     let input: Vec<String> = std::env::args_os().map(|e| e.to_string_lossy().to_string()).collect();
     match RppdConfig::new(input) {
@@ -58,19 +61,19 @@ async fn main() -> ExitCode {
                             ExitCode::from(0)
                         }
                         Err(e) => {
-                            error!(log, "{} {}", t!("error"), e);
+                            error!(log, "{}", rppde::tr!("main.error", err = e));
                             ExitCode::from(11)
                         }
                     }
                 }
                 Err(e) => {
-                    error!(log, "{} {}", t!("error"), e);
+                    error!(log, "{}", rppde::tr!("main.error", err = e));
                     ExitCode::from(12)
                 }
             }
         }
         Err(e) => {
-            error!(log, "{} {}", t!("error"), e);
+            error!(log, "{}", rppde::tr!("main.error", err = e));
             info!(log, "{}", arg_config::usage());
             ExitCode::from(22)
         }

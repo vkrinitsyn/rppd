@@ -10,7 +10,7 @@ use pyo3::prelude::PyModule;
 use pyo3::types::{IntoPyDict, PyAnyMethods};
 use uuid::Uuid;
 
-use crate::rd_config::{RppdNodeCluster, SecretOpener, TIMEOUT_MS};
+use crate::rd_config::{RppdNodeCluster, SecretChecker, SecretOpener, TIMEOUT_MS};
 use crate::rd_fn::{RpFn, RpFnLog};
 use crate::LP;
 
@@ -101,8 +101,16 @@ pub(crate) fn set_secret_opener(o: Option<SecretOpener>) {
     *SECRET_OPENER.write().unwrap_or_else(|e| e.into_inner()) = o;
 }
 
+/// [rotate-key] The host's check (`ConfigurationRequest::SecretCheck`), as the opener
+static SECRET_CHECKER: std::sync::RwLock<Option<SecretChecker>> = std::sync::RwLock::new(None);
+
+pub(crate) fn set_secret_checker(c: Option<SecretChecker>) {
+    *SECRET_CHECKER.write().unwrap_or_else(|e| e.into_inner()) = c;
+}
+
 /// [skv] `SECRET` in a function's locals: `SECRET.get("name")` -> str,
-/// `SECRET.get_bytes("name")` -> bytes. Only for the names the function lists in
+/// `SECRET.get_bytes("name")` -> bytes, [rotate-key] `SECRET.check("name", value)` ->
+/// bool (is a presented str or bytes the secret's). Only for the names the function lists in
 /// `rppd_function.secret_names` - whoever may write that table decides, so its
 /// GRANTs are the boundary (README). The value goes from the host's memory into
 /// this interpreter and nowhere else: not logged, not in `rppd_function_log`.
@@ -112,15 +120,26 @@ pub struct Secrets {
 }
 
 impl Secrets {
-    fn open(&self, name: &str) -> PyResult<Vec<u8>> {
+    fn listed(&self, name: &str) -> PyResult<()> {
         if !self.names.iter().any(|n| n == name) {
-            return Err(pyo3::exceptions::PyPermissionError::new_err(format!(
-                "secret {:?} is not in this function's secret_names", name)));
+            return Err(pyo3::exceptions::PyPermissionError::new_err(tr!("py.not_listed", name = format!("{:?}", name))));
         }
+        Ok(())
+    }
+
+    fn open(&self, name: &str) -> PyResult<Vec<u8>> {
+        self.listed(name)?;
         let o = SECRET_OPENER.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let o = o.ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-            "no secret store in this host (rppd runs outside ytserv, or ytserv has none)"))?;
+        let o = o.ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(tr!("py.no_store")))?;
         o(name).map_err(pyo3::exceptions::PyKeyError::new_err)
+    }
+
+    /// [rotate-key] `presented` against the secret, by the host
+    fn check_raw(&self, name: &str, presented: &[u8]) -> PyResult<bool> {
+        self.listed(name)?;
+        let c = SECRET_CHECKER.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let c = c.ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(tr!("py.no_store")))?;
+        c(name, presented).map_err(pyo3::exceptions::PyKeyError::new_err)
     }
 }
 
@@ -128,8 +147,7 @@ impl Secrets {
 impl Secrets {
     /// The value as text (UTF-8).
     fn get(&self, name: &str) -> PyResult<String> {
-        String::from_utf8(self.open(name)?).map_err(|_| pyo3::exceptions::PyValueError::new_err(format!(
-            "secret {:?} is not UTF-8 text - use SECRET.get_bytes", name)))
+        String::from_utf8(self.open(name)?).map_err(|_| pyo3::exceptions::PyValueError::new_err(tr!("py.not_text", name = format!("{:?}", name))))
     }
 
     /// The value as bytes.
@@ -140,6 +158,17 @@ impl Secrets {
     /// The names this function may open.
     fn names(&self) -> Vec<String> {
         self.names.clone()
+    }
+
+    /// [rotate-key] Is `value` - str or bytes - the secret's? While the secret rotates,
+    /// the old and the new value both are. What a function checks a presented key with:
+    /// `SECRET.get` gives the new value only.
+    fn check(&self, name: &str, value: &pyo3::Bound<'_, pyo3::PyAny>) -> PyResult<bool> {
+        let raw: Vec<u8> = match value.extract::<String>() {
+            Ok(s) => s.into_bytes(),
+            Err(_) => value.extract::<Vec<u8>>().map_err(|_| pyo3::exceptions::PyTypeError::new_err(tr!("py.check_type")))?,
+        };
+        self.check_raw(name, &raw)
     }
 }
 
@@ -180,7 +209,7 @@ impl RppdNodeCluster {
         });
         
         if let Err(e) = &etcd_client {
-            slog::error!(self.log, "{}failed to connect to etcd v3 [{}:{}]: {}", LP, host, port, e);
+            slog::error!(self.log, "{}{}", LP, tr!("py.etcd", host = host, port = port, err = e));
         }
 
         // connect to Apache DataFusion (aka Ballista) scheduler, only if configured
@@ -195,7 +224,7 @@ impl RppdNodeCluster {
             }) {
                 Ok(ctx) => Some(ManuallyDrop::new(ctx)),
                 Err(e) => {
-                    slog::error!(self.log, "{}failed to connect to datafusion/ballista scheduler [{}]: {}", LP, url, e);
+                    slog::error!(self.log, "{}{}", LP, tr!("py.df", url = url, err = e));
                     None
                 }
             }
@@ -212,7 +241,7 @@ impl RppdNodeCluster {
             }) {
                 Ok(c) => Some(ManuallyDrop::new(c)),
                 Err(e) => {
-                    slog::error!(self.log, "{}failed to connect to ClickHouse [{}]: {}", LP, url, e);
+                    slog::error!(self.log, "{}{}", LP, tr!("py.clickhouse", url = url, err = e));
                     None
                 }
             }
@@ -317,8 +346,8 @@ impl PyContext {
             let out = match capture_instance {
                 Some(ci) => match ci.getattr("output") {
                     Ok(c) => c.extract::<String>()
-                        .unwrap_or_else(|out| format!("err: {}", out)),
-                    Err(e) => format!("err: {}", e)
+                        .unwrap_or_else(|out| tr!("py.output", err = out)),
+                    Err(e) => tr!("py.output", err = e)
                 }
                 None => "".to_string()
             };
@@ -351,6 +380,24 @@ mod skv_tests {
         set_secret_opener(None);
     }
 
+    /// [rotate-key] SECRET.check: the host's answer, for the listed names only, and
+    /// only with a checker
+    #[test]
+    fn a_function_checks_a_value_only_for_what_it_lists() {
+        set_secret_checker(None);
+        let s = Secrets { names: vec!["api_key".into()] };
+        assert!(s.check_raw("api_key", b"old").is_err(), "no checker in this host");
+        set_secret_checker(Some(std::sync::Arc::new(|n: &str, v: &[u8]| match n {
+            "api_key" => Ok(v == b"old" || v == b"new"),
+            _ => Err(format!("no secret named {}", n)),
+        })));
+        assert!(s.check_raw("api_key", b"old").unwrap(), "the old value, during a rotation");
+        assert!(s.check_raw("api_key", b"new").unwrap());
+        assert!(!s.check_raw("api_key", b"other").unwrap());
+        assert!(s.check_raw("db_password", b"old").is_err(), "not listed");
+        set_secret_checker(None);
+    }
+
     /// [pyo3] SECRET as a function's code meets it: a Secrets in the interpreter, in
     /// the locals as `invoke` puts it there, its methods called from Python. Only the
     /// checks made before the secret store, so SECRET_OPENER stays the test above's
@@ -367,8 +414,26 @@ mod skv_tests {
         });
         let (names, text, raw) = r.unwrap_or_else(|e| panic!("{}", e));
         assert_eq!(names, vec!["db_password"]);
+        // in the messages' language, whichever the environment names
         for m in [text, raw] {
-            assert!(m.contains("not in this function's secret_names"), "{}", m);
+            assert_eq!(m, tr!("py.not_listed", name = format!("{:?}", "api_token")));
         }
+    }
+
+    /// [rotate-key] SECRET.check from Python: an unlisted name refused, a value neither
+    /// str nor bytes refused - both before the secret store, so no checker is needed
+    #[test]
+    fn a_function_meets_secret_check_in_the_interpreter() {
+        let r: PyResult<(String, String)> = Python::attach(|py| {
+            let locals = pyo3::types::PyDict::new(py);
+            locals.set_item(SECRET, pyo3::Bound::new(py, Secrets { names: vec!["api_key".into()] })?)?;
+            py.run(c_str!("try:\n    SECRET.check('db_password', 'x')\n    other = 'checked'\nexcept PermissionError as e:\n    other = str(e)\n\
+                try:\n    SECRET.check('api_key', 42)\n    kind = 'checked'\nexcept TypeError as e:\n    kind = str(e)\n"),
+                None, Some(&locals))?;
+            Ok((locals.get_item("other")?.extract()?, locals.get_item("kind")?.extract()?))
+        });
+        let (other, kind) = r.unwrap_or_else(|e| panic!("{}", e));
+        assert_eq!(other, tr!("py.not_listed", name = format!("{:?}", "db_password")));
+        assert_eq!(kind, tr!("py.check_type"));
     }
 }
