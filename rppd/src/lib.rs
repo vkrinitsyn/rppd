@@ -52,7 +52,7 @@ const LP: &'static str = "[py] ";
 const LP: &'static str = "";
 
 
-const SG: &str = include_str!("../../rppd.yaml");
+const SG: &str = include_str!("../rppd.yaml");
 
 /// Schema Guard compatible schema definition, to be used in case of use as embedded library, to avoid the need of a separate rppd.yaml file.
 /// This is used to have a lib run without extantion install and trigger function configured.

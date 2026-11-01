@@ -1,6 +1,6 @@
 -- /*%LPH%*/
 --
--- NOTE: the canonical definition of these tables is ../rppd.yaml, a SchemaGuard
+-- NOTE: the canonical definition of these tables is ../rppd/rppd.yaml, a SchemaGuard
 -- schema. This file is the pgrx/extension form of the same thing, embedded by
 -- `extension_sql_file!` so that CREATE EXTENSION keeps working unchanged.
 --

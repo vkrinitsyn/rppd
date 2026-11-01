@@ -25,7 +25,7 @@ A security problem is not reported in a public issue: write to
    generated gRPC clients): de, en, fr, ja, ru, zh, one file each. Add a new key in every
    file, on the same line in each, with the same `%{placeholders}`; an error's message
    starts with its code, `RPPD-Ennn`, the same in every language. The unit tests check it.
-5. A change to the tables rppd keeps goes into `rppd.yaml`, which creates and alters them;
+5. A change to the tables rppd keeps goes into `rppd/rppd.yaml`, which creates and alters them;
    a change to the wire into `rppd-common/protos/`.
 6. Open the pull request against `main`.
 
