@@ -20,6 +20,10 @@ message MessageRequest {
 	string key = 1;
 	// value is the value, in bytes, to associate with the key in the key-value store.
 	bytes value = 2;
+	// [otel] the producer's W3C traceparent, kept by etcds' queue with the message
+	// (yt-pgxt resilience.md phase 4): the function's span continues that trace.
+	// Empty from an etcd that does not carry it.
+	string traceparent = 3;
 }
 
 message MessageResponse {

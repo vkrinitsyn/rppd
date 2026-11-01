@@ -1,0 +1,7 @@
+rppd - Rust Python Postgres Discovery: a PostgreSQL trigger hands each change to a service
+that runs a Python function for it.
+
+Copyright (c) 2023-2026 Vladimir Krinitsyn, DBinvent
+
+Licensed under the MIT license: see LICENSE. The crates it is built with keep their own
+licenses, as Cargo.lock lists them.

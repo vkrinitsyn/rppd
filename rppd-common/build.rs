@@ -13,6 +13,11 @@ fn _main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // [i18n] rust-i18n reads locales/ untracked by cargo: an edit there builds again; and
+    // a proto added to protos/ is read too
+    println!("cargo:rerun-if-changed=locales");
+    println!("cargo:rerun-if-changed={}", DIR);
+    println!("cargo:rerun-if-changed=build.rs");
     let _ = fs::create_dir(TEMP_GEN_DIR);
     // let _ = fs::remove_dir_all(format!("src/{}", TEMP_GEN_DIR).as_str());
     // let _ = fs::create_dir(format!("src/{}", TEMP_GEN_DIR).as_str());
@@ -38,7 +43,7 @@ fn do_build(name: &str) -> io::Result<()> {
     let  dest = format!("src/{}/{}.rs", TEMP_GEN_DIR, name);
     println!("cargo:info=building: {} to {}", file, dest);
 
-    let _ = tonic_build::configure()
+    let _ = tonic_prost_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .out_dir(PathBuf::from(TEMP_GEN_DIR))
         .compile_protos(&[file.as_str()], &[DIR])?;
@@ -54,6 +59,8 @@ fn do_build(name: &str) -> io::Result<()> {
             patch(&mut contents, ".connect()", ".connect_timeout(d)", true);
             uncomment(&mut contents, "serde(skip)");
             comment(&mut contents, "pub mod cfg_tabl", "#[derive(serde::");
+            // [i18n] tonic's "Service was not ready" in the messages' language (src/i18n.rs)
+            contents = contents.replace("format!(\"Service was not ready: {}\", e.into())", "crate::i18n::not_ready(e.into())");
 
             let _ = fs::write(dest.as_str(), contents)?;
             println!("cargo:info=wrote: {}", dest);

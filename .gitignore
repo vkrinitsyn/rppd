@@ -6,3 +6,5 @@
 **/*.o
 **/*.bc
 **/*.so
+# CocoIndex Code (ccc)
+/.cocoindex_code/

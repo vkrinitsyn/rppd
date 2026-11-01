@@ -10,7 +10,6 @@ use std::path::Path;
 use std::str::FromStr;
 use uuid::Uuid;
 use rppd_common::CFG_TABLE;
-use crate::fl;
 
 /// DEFAULT_SCHEMA_TABLEe: ytcc::DEFAULT_SCHEMA . ytcc::DEFAULT_TABLE)
 // pub const DEFAULT_DB_URL: &str = "postgresql://postgres@postgres?host=/var/run/postgresql";
@@ -24,6 +23,8 @@ pub const CFG_CRON_TABLE: &str = "rppd_cron";
 pub const SCHEMA: &str = "schema";
 pub const URL: &str = "url";
 pub const BIND: &str = "bind";
+pub const DF: &str = "df";
+pub const CH: &str = "ch";
 pub const LOCALHOST: &str = "localhost";
 
 pub const MAX_QUEUE_SIZE: usize = 1000;
@@ -38,12 +39,12 @@ pub const DEFAULT_PORT: u16 = 8881;
 
 pub fn usage() -> String {
     format!("{}\n\n{}\n  {} {}.{}\n{}",
-            fl!("rppd-usage"),
-            fl!("rppd-default-args"),
+            tr!("args.usage"),
+            tr!("args.defaults"),
             DEFAULT_DB_URL,
             DEFAULT_SCHEMA,
             CFG_TABLE,
-            fl!("rppd-more-args"),
+            tr!("args.more"),
     )
 }
 
@@ -64,6 +65,12 @@ pub struct RppdConfig {
     pub schema: String,
     pub table: String,
     pub db_url: String,
+    /// Apache DataFusion (aka Ballista) scheduler address, ex: "df://localhost:50050", to expose a `DF` python client.
+    /// None disables the DF client. Requires the "datafusion" cargo feature and the python 'ballista' package
+    pub df_url: Option<String>,
+    /// ClickHouse HTTP endpoint, ex: "http://localhost:8123", to expose a `CH` python client.
+    /// None disables the CH client. Requires the python 'clickhouse_connect' package
+    pub ch_url: Option<String>,
     pub user: String,
     pub pwd: String,
     pub file: Option<String>,
@@ -74,6 +81,12 @@ pub struct RppdConfig {
     pub max_queue_size: usize,
     pub force_master: bool,
     pub verbose: bool,
+    /// [db-tag] The database this instance serves, when it is not an embedder's
+    /// default one (yt-pgxt combined-config.md D11: one rppd per database): its
+    /// queues are `/q/<db_tag>/<name>` for the `/q/<name>` its functions name, and
+    /// its calls to its peers carry it (`rppd-db`), for the instance of that
+    /// database there. Empty: queues as named, calls untagged.
+    pub db_tag: String,
 }
 
 impl Default for RppdConfig {
@@ -99,6 +112,8 @@ impl Default for RppdConfig {
             cluster: Uuid::new_v4(),
             name: this,
             db_url: DEFAULT_DB_URL.replace("$USER", user.as_str()),
+            df_url: None,
+            ch_url: None,
             user,
             pwd,
             file: None,
@@ -109,6 +124,7 @@ impl Default for RppdConfig {
             max_queue_size: RppdConfig::max_queue_size(),
             force_master: false,
             verbose: false,
+            db_tag: String::new(),
         }
     }
 }
@@ -117,6 +133,12 @@ impl Display for RppdConfig {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         writeln!(f, "db: {}", self.db_url)?;
+        if let Some(df) = &self.df_url {
+            writeln!(f, "df: {}", df)?;
+        }
+        if let Some(ch) = &self.ch_url {
+            writeln!(f, "ch: {}", ch)?;
+        }
         if let Some(fl) = &self.file {
             writeln!(f, "config: {}", fl)?;
         }
@@ -131,7 +153,7 @@ impl RppdConfig {
     pub fn new(input: Vec<String>) -> Result<Self, String> {
         
         if input.len() > 6 {
-            return Err(fl!("err-too-many-args", count = (input.len()  - 1)));
+            return Err(tr!("args.too_many", count = (input.len() - 1)));
         } else if input.len() == 1 { // default using env
             return Ok(RppdConfig::default());
         }
@@ -152,6 +174,8 @@ impl RppdConfig {
         let def = RppdConfig::default();
         let mut user = def.user.clone();
         let mut db_url = def.db_url.clone();
+        let mut df_url = def.df_url.clone();
+        let mut ch_url = def.ch_url.clone();
         let mut pwd = def.pwd.clone();
         let file = if file_idx > 0 { Some((&input[file_idx]).to_string()) } else { None };
         let mut schema = def.schema.clone();
@@ -173,6 +197,12 @@ impl RppdConfig {
                     pwd = v;
                 } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "postgresql://", URL) {
                     db_url = v;
+                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "df://", DF) {
+                    // Apache DataFusion (aka Ballista) scheduler url, checked before BIND since it also contains ':'
+                    df_url = Some(v);
+                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "http://", CH) {
+                    // ClickHouse HTTP endpoint, likewise before BIND
+                    ch_url = Some(v);
                 } else if input[i].starts_with("--force_master=") {
                     force_master = input[i].ends_with("=true") || input[i].ends_with("=yes");
                 } else if input[i].starts_with("--name=") {
@@ -185,14 +215,14 @@ impl RppdConfig {
                         match b[1].parse::<u16>() {
                             Ok(v) => { port = v; }
                             Err(e) => {
-                                return Err(fl!("err-wrong-port-format", string = e.to_string(), value = v));
+                                return Err(tr!("args.port", value = v, err = e));
                             }
                         }
                     }
                 } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "", SCHEMA) {
                     let s: Vec<&str> = v.split(".").collect();
                     if s.len() > 2 {
-                        return Err(fl!("err-wrong-schema-format", string = v));
+                        return Err(tr!("args.schema", value = v));
                     }
                     schema = s[0].to_string();
                 } else if input[i].starts_with("--node=") {
@@ -206,12 +236,13 @@ impl RppdConfig {
         }
 
         Ok(RppdConfig {
-            node, cluster, name, db_url, user, pwd, file,
+            node, cluster, name, db_url, df_url, ch_url, user, pwd, file,
             schema, table: CFG_TABLE.to_string(),
             bind, port,
             max_queue_size: RppdConfig::max_queue_size(),
             force_master,
             verbose,
+            db_tag: String::new(),
         })
     }
 
@@ -269,7 +300,7 @@ impl RppdConfig {
             RppdConfig::load(f, cfg);
             Ok(())
         } else {
-            Err("wrong format".into())
+            Err(tr!("args.no_file", path = file))
         }
     }
 
@@ -312,6 +343,51 @@ impl RppdConfig {
         let urls: Vec<&str> = self.db_url.split("@").collect();
         format!("postgres://{}:{}@{}", self.user, self.pwd, urls[urls.len() - 1])
     }
+
+    /// [rppd-tables] The connection URL rppd uses, user and password in it - for an
+    /// embedding process to run `ensure_schema` where rppd would connect.
+    pub fn connection_url(&self) -> String {
+        self.db_url()
+    }
+
+    /// [db-tag] A queue key in this instance's namespace: `/q/<name>...` (or
+    /// `/queue/`) becomes `/q/<db_tag>/<name>...`; anything else, or an untagged
+    /// instance, as given.
+    pub fn qkey(&self, key: &str) -> String {
+        if self.db_tag.is_empty() {
+            return key.to_string();
+        }
+        for root in ["/q/", "/queue/"] {
+            if let Some(rest) = key.strip_prefix(root) {
+                return format!("{}{}/{}", root, self.db_tag, rest);
+            }
+        }
+        key.to_string()
+    }
+
+    /// [db-tag] A key as this instance's functions name it: its namespace taken off.
+    pub fn unqkey(&self, key: &str) -> String {
+        if self.db_tag.is_empty() {
+            return key.to_string();
+        }
+        for root in ["/q/", "/queue/"] {
+            if let Some(rest) = key.strip_prefix(root).and_then(|r| r.strip_prefix(&self.db_tag)).and_then(|r| r.strip_prefix('/')) {
+                return format!("{}{}", root, rest);
+            }
+        }
+        key.to_string()
+    }
+
+    /// Apache DataFusion (aka Ballista) scheduler url ready to pass to `BallistaSessionContext`, ex: "df://localhost:50050".
+    /// None if not configured, disabling the `DF` python client
+    pub(crate) fn df_url(&self) -> Option<String> {
+        self.df_url.as_ref().map(|v| if v.starts_with("df://") { v.clone() } else { format!("df://{}", v) })
+    }
+
+    /// ClickHouse endpoint as a DSN `clickhouse_connect` accepts, scheme added when absent.
+    pub(crate) fn ch_url(&self) -> Option<String> {
+        self.ch_url.as_ref().map(|v| if v.contains("://") { v.clone() } else { format!("http://{}", v) })
+    }
 }
 
 #[allow(warnings)]
@@ -323,6 +399,22 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    /// [db-tag] a tagged instance's queues are its database's: `/q/<db>/...` on the
+    /// wire, `/q/...` as its functions name them; an untagged one's as named
+    #[test]
+    fn a_tagged_instance_keeps_its_queues_apart() {
+        let mut c = RppdConfig { db_tag: "appdb".into(), ..Default::default() };
+        assert_eq!(c.qkey("/q/orders/producer/1"), "/q/appdb/orders/producer/1");
+        assert_eq!(c.qkey("/queue/x"), "/queue/appdb/x");
+        assert_eq!(c.qkey("public.t"), "public.t", "a table is no queue");
+        assert_eq!(c.unqkey("/q/appdb/orders/producer/1"), "/q/orders/producer/1");
+        assert_eq!(c.unqkey("/q/other/orders"), "/q/other/orders", "another database's");
+        assert_eq!(c.unqkey("/q/appdbx/orders"), "/q/appdbx/orders", "a name that starts like the tag is no tag");
+        c.db_tag = String::new();
+        assert_eq!(c.qkey("/q/orders"), "/q/orders");
+        assert_eq!(c.unqkey("/q/orders"), "/q/orders");
+    }
 
     #[inline]
     fn uuid() -> String {
@@ -394,10 +486,38 @@ mod tests {
     }
 
     #[test]
+    fn config_args_df_test() {
+        let cfg = ["test".to_string(), "postgresql://db".to_string(), "df://scheduler:50050".to_string()].to_vec();
+        let cfg = RppdConfig::new(cfg).unwrap();
+        assert_eq!(cfg.df_url.as_deref(), Some("df://scheduler:50050"));
+        assert_eq!(cfg.df_url().as_deref(), Some("df://scheduler:50050"));
+    }
+
+    #[test]
+    fn df_url_normalize_test() {
+        let mut cfg = RppdConfig::default();
+        assert_eq!(cfg.df_url(), None);
+        cfg.df_url = Some("scheduler:50050".to_string());
+        assert_eq!(cfg.df_url().as_deref(), Some("df://scheduler:50050"));
+    }
+
+    #[test]
+    fn ch_url_normalize_test() {
+        let mut cfg = RppdConfig::default();
+        // unset means no CH client is exposed to python at all
+        assert_eq!(cfg.ch_url(), None);
+        cfg.ch_url = Some("ch.lan:8123".to_string());
+        assert_eq!(cfg.ch_url().as_deref(), Some("http://ch.lan:8123"));
+        // an explicit scheme is left alone, https included
+        cfg.ch_url = Some("https://ch.lan:8443".to_string());
+        assert_eq!(cfg.ch_url().as_deref(), Some("https://ch.lan:8443"));
+    }
+
+    #[test]
     fn dns_test() {
-        let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host("localhost").unwrap();
+        let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host("localhost").unwrap().collect();
         assert!(ips.len() > 0);
-        let ipsd: Vec<std::net::IpAddr> = dns_lookup::lookup_host("127.0.0.1").unwrap();
+        let ipsd: Vec<std::net::IpAddr> = dns_lookup::lookup_host("127.0.0.1").unwrap().collect();
         assert_eq!(ipsd.len(), 1);
     }
 }

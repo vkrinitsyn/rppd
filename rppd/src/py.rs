@@ -4,22 +4,30 @@ use std::ffi::CString;
 use std::mem::ManuallyDrop;
 use std::time::Instant;
 
-use pyo3::{IntoPyObject, Py, PyErr, PyObject, PyResult, Python};
+use pyo3::{IntoPyObject, Py, PyAny, PyErr, PyResult, Python};
 use pyo3::ffi::c_str;
 use pyo3::prelude::PyModule;
 use pyo3::types::{IntoPyDict, PyAnyMethods};
 use uuid::Uuid;
 
-use crate::rd_config::{RppdNodeCluster, TIMEOUT_MS};
+use crate::rd_config::{RppdNodeCluster, SecretChecker, SecretOpener, TIMEOUT_MS};
 use crate::rd_fn::{RpFn, RpFnLog};
 use crate::LP;
 
 /// ManuallyDrop for PyModule and db: PyObject
 pub struct PyContext {
     py_rt: ManuallyDrop<Py<PyModule>>,
-    py_db: ManuallyDrop<PyObject>,
+    py_db: ManuallyDrop<Py<PyAny>>,
     rt_etcd: ManuallyDrop<Py<PyModule>>,
-    py_etcd: Result<ManuallyDrop<PyObject>, PyErr>,
+    py_etcd: Result<ManuallyDrop<Py<PyAny>>, PyErr>,
+    /// Apache DataFusion (aka Ballista) BallistaSessionContext, exposed to python as `DF`.
+    /// None if df_url is not configured or the "datafusion" feature is disabled; connection failures are logged and also become None
+    #[cfg(feature = "datafusion")]
+    py_df: Option<ManuallyDrop<Py<PyAny>>>,
+    /// ClickHouse client, exposed to python as `CH`, for tables using
+    /// on_commit_clickhouse. None if ch_url is not configured; a failed
+    /// connection or a missing python package is logged and also becomes None
+    py_ch: Option<ManuallyDrop<Py<PyAny>>>,
     // capture: Result<ManuallyDrop<Bound<PyModule>>, PyErr>,
     created: Instant,
     /// last tiem use
@@ -29,13 +37,20 @@ pub struct PyContext {
 
 impl Drop for PyContext {
     fn drop(&mut self) {
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             unsafe {
                 ManuallyDrop::drop(&mut self.py_rt);
                 ManuallyDrop::drop(&mut self.py_db);
                 ManuallyDrop::drop(&mut self.rt_etcd);
                 if let Ok(etcd) = &mut self.py_etcd {
                     ManuallyDrop::drop(etcd);
+                }
+                if let Some(ch) = &mut self.py_ch {
+                    ManuallyDrop::drop(ch);
+                }
+                #[cfg(feature = "datafusion")]
+                if let Some(df) = &mut self.py_df {
+                    ManuallyDrop::drop(df);
                 }
             }
         });
@@ -60,30 +75,124 @@ pub enum PyCall {
 /// python module to import
 pub const POSTGRES_PY: &str = "psycopg2";
 pub const ETCD_PY: &str = "etcd3";
+/// Apache DataFusion (aka Ballista) python client, see https://datafusion.apache.org/ballista/user-guide/python/quickstart.html
+pub const DATAFUSION_PY: &str = "ballista";
+/// ClickHouse python client, see https://clickhouse.com/docs/integrations/python
+pub const CLICKHOUSE_PY: &str = "clickhouse_connect";
 
 pub const DB: &str = "DB";
 pub const ETCD: &str = "ETCD";
+pub const DF: &str = "DF";
+pub const CH: &str = "CH";
 pub const TOPIC: &str = "TOPIC";
 pub const TABLE: &str = "TABLE";
 pub const TRIG: &str = "TRIG";
 pub const VALUE: &str = "VALUE";
+/// [skv] the secret store, for the names a function lists in `secret_names`
+pub const SECRET: &str = "SECRET";
+/// [otel] the call's own W3C traceparent, to continue its trace (rd_config.rs)
+pub const TRACE: &str = "TRACE";
+
+/// [skv] The host's secret opener (ytserv's secret store), set through
+/// `ConfigurationRequest::Secrets`. One per process, like the embedded runtime.
+static SECRET_OPENER: std::sync::RwLock<Option<SecretOpener>> = std::sync::RwLock::new(None);
+
+pub(crate) fn set_secret_opener(o: Option<SecretOpener>) {
+    *SECRET_OPENER.write().unwrap_or_else(|e| e.into_inner()) = o;
+}
+
+/// [rotate-key] The host's check (`ConfigurationRequest::SecretCheck`), as the opener
+static SECRET_CHECKER: std::sync::RwLock<Option<SecretChecker>> = std::sync::RwLock::new(None);
+
+pub(crate) fn set_secret_checker(c: Option<SecretChecker>) {
+    *SECRET_CHECKER.write().unwrap_or_else(|e| e.into_inner()) = c;
+}
+
+/// [skv] `SECRET` in a function's locals: `SECRET.get("name")` -> str,
+/// `SECRET.get_bytes("name")` -> bytes, [rotate-key] `SECRET.check("name", value)` ->
+/// bool (is a presented str or bytes the secret's). Only for the names the function lists in
+/// `rppd_function.secret_names` - whoever may write that table decides, so its
+/// GRANTs are the boundary (README). The value goes from the host's memory into
+/// this interpreter and nowhere else: not logged, not in `rppd_function_log`.
+#[pyo3::pyclass(name = "Secrets")]
+pub struct Secrets {
+    names: Vec<String>,
+}
+
+impl Secrets {
+    fn listed(&self, name: &str) -> PyResult<()> {
+        if !self.names.iter().any(|n| n == name) {
+            return Err(pyo3::exceptions::PyPermissionError::new_err(tr!("py.not_listed", name = format!("{:?}", name))));
+        }
+        Ok(())
+    }
+
+    fn open(&self, name: &str) -> PyResult<Vec<u8>> {
+        self.listed(name)?;
+        let o = SECRET_OPENER.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let o = o.ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(tr!("py.no_store")))?;
+        o(name).map_err(pyo3::exceptions::PyKeyError::new_err)
+    }
+
+    /// [rotate-key] `presented` against the secret, by the host
+    fn check_raw(&self, name: &str, presented: &[u8]) -> PyResult<bool> {
+        self.listed(name)?;
+        let c = SECRET_CHECKER.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let c = c.ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(tr!("py.no_store")))?;
+        c(name, presented).map_err(pyo3::exceptions::PyKeyError::new_err)
+    }
+}
+
+#[pyo3::pymethods]
+impl Secrets {
+    /// The value as text (UTF-8).
+    fn get(&self, name: &str) -> PyResult<String> {
+        String::from_utf8(self.open(name)?).map_err(|_| pyo3::exceptions::PyValueError::new_err(tr!("py.not_text", name = format!("{:?}", name))))
+    }
+
+    /// The value as bytes.
+    fn get_bytes<'py>(&self, py: Python<'py>, name: &str) -> PyResult<pyo3::Bound<'py, pyo3::types::PyBytes>> {
+        Ok(pyo3::types::PyBytes::new(py, &self.open(name)?))
+    }
+
+    /// The names this function may open.
+    fn names(&self) -> Vec<String> {
+        self.names.clone()
+    }
+
+    /// [rotate-key] Is `value` - str or bytes - the secret's? While the secret rotates,
+    /// the old and the new value both are. What a function checks a presented key with:
+    /// `SECRET.get` gives the new value only.
+    fn check(&self, name: &str, value: &pyo3::Bound<'_, pyo3::PyAny>) -> PyResult<bool> {
+        let raw: Vec<u8> = match value.extract::<String>() {
+            Ok(s) => s.into_bytes(),
+            Err(_) => value.extract::<Vec<u8>>().map_err(|_| pyo3::exceptions::PyTypeError::new_err(tr!("py.check_type")))?,
+        };
+        self.check_raw(name, &raw)
+    }
+}
+
+/// `secret_names` as written: names separated by commas or whitespace.
+pub(crate) fn secret_names(s: Option<&str>) -> Vec<String> {
+    s.unwrap_or("").split(|c: char| c == ',' || c.is_whitespace()).filter(|n| !n.is_empty()).map(|n| n.to_string()).collect()
+}
 
 impl RppdNodeCluster {
     /// create Python runtime and DB connection
     #[inline]
     pub(crate) async fn new_py_context(&self, f: &RpFn) -> Result<PyContext, PyErr> {
         let db_url = self.cfg.read().await.db_url();
-        let module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
+        let module: Py<PyModule> = Python::attach(|py| -> PyResult<_> {
             Ok(PyModule::import(py, POSTGRES_PY)?.into())
         })?;
 
         // connect to DB
         // let libpq_kv = format!("host=localhost sslmode=disable user={} password={} dbname={}", username, password, db);
-        let client: PyObject = Python::with_gil(|py| -> PyResult<_> {
+        let client: Py<PyAny> = Python::attach(|py| -> PyResult<_> {
             Ok(module.bind_borrowed(py).getattr("connect")?.call1((&db_url,))?.into())
         })?;
 
-        let etcd_module: Py<PyModule> = Python::with_gil(|py| -> PyResult<_> {
+        let etcd_module: Py<PyModule> = Python::attach(|py| -> PyResult<_> {
             Ok(PyModule::import(py, ETCD_PY)?.into())
         })?;
 
@@ -94,20 +203,58 @@ impl RppdNodeCluster {
 
         // connect to ETCD
         // see https://github.com/lupko/etcd3-client/blob/master/src/etcd3/client.py#L120
-        let etcd_client: Result<PyObject, PyErr> = Python::with_gil(|py| -> PyResult<_> {
+        let etcd_client: Result<Py<PyAny>, PyErr> = Python::attach(|py| -> PyResult<_> {
             Ok(etcd_module.bind_borrowed(py).getattr("client")?
                 .call( (host.clone(), port.clone()), None)?.into())
         });
         
         if let Err(e) = &etcd_client {
-            slog::error!(self.log, "{}failed to connect to etcd v3 [{}:{}]: {}", LP, host, port, e);
+            slog::error!(self.log, "{}{}", LP, tr!("py.etcd", host = host, port = port, err = e));
         }
+
+        // connect to Apache DataFusion (aka Ballista) scheduler, only if configured
+        #[cfg(feature = "datafusion")]
+        let py_df: Option<ManuallyDrop<Py<PyAny>>> = match self.cfg.read().await.df_url() {
+            None => None,
+            Some(url) => match Python::attach(|py| -> PyResult<Py<PyAny>> {
+                Ok(PyModule::import(py, DATAFUSION_PY)?
+                    .getattr("BallistaSessionContext")?
+                    .call1((url.as_str(),))?
+                    .into())
+            }) {
+                Ok(ctx) => Some(ManuallyDrop::new(ctx)),
+                Err(e) => {
+                    slog::error!(self.log, "{}{}", LP, tr!("py.df", url = url, err = e));
+                    None
+                }
+            }
+        };
+
+        // connect to ClickHouse, only if configured
+        let py_ch: Option<ManuallyDrop<Py<PyAny>>> = match self.cfg.read().await.ch_url() {
+            None => None,
+            Some(url) => match Python::attach(|py| -> PyResult<Py<PyAny>> {
+                Ok(PyModule::import(py, CLICKHOUSE_PY)?
+                    .getattr("get_client")?
+                    .call((), Some(&[("dsn", url.as_str())].into_py_dict(py)?))?
+                    .into())
+            }) {
+                Ok(c) => Some(ManuallyDrop::new(c)),
+                Err(e) => {
+                    slog::error!(self.log, "{}{}", LP, tr!("py.clickhouse", url = url, err = e));
+                    None
+                }
+            }
+        };
 
         Ok(PyContext {
             py_rt: ManuallyDrop::new(module),
             py_db: ManuallyDrop::new(client),
             rt_etcd: ManuallyDrop::new(etcd_module),
             py_etcd: etcd_client.map(|p| ManuallyDrop::new(p)),
+            #[cfg(feature = "datafusion")]
+            py_df,
+            py_ch,
             created: Instant::now(),
             ltu: Instant::now(),
         })
@@ -134,7 +281,7 @@ impl PyContext {
 
 
     pub(crate) fn invoke(&mut self, x: &RpFnLog, fc: &RpFn) -> Result<String, String> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let locals = [
                 (DB, self.py_db.bind_borrowed(py)),
                 (TOPIC, fc.topic.clone().into_pyobject(py)?.into_any().as_borrowed()),
@@ -154,6 +301,27 @@ impl PyContext {
             
             if let Ok(e) = &self.py_etcd {
                 let _ = locals.set_item(ETCD, e.bind_borrowed(py))?;
+            }
+
+            #[cfg(feature = "datafusion")]
+            if let Some(df) = &self.py_df {
+                let _ = locals.set_item(DF, df.bind_borrowed(py))?;
+            }
+
+            // alongside DB, for a table with on_commit_clickhouse set
+            if let Some(ch) = &self.py_ch {
+                let _ = locals.set_item(CH, ch.bind_borrowed(py))?;
+            }
+
+            // [otel] the trace this call is a span of
+            if let Some(tp) = &x.traceparent {
+                let _ = locals.set_item(TRACE, tp.clone().into_pyobject(py)?.into_any().as_borrowed())?;
+            }
+
+            // [skv] the secret store, for the names this function lists
+            let names = secret_names(fc.secret_names.as_deref());
+            if !names.is_empty() {
+                let _ = locals.set_item(SECRET, pyo3::Bound::new(py, Secrets { names })?)?;
             }
 
             let capture_instance = if fc.fn_logging {
@@ -178,8 +346,8 @@ impl PyContext {
             let out = match capture_instance {
                 Some(ci) => match ci.getattr("output") {
                     Ok(c) => c.extract::<String>()
-                        .unwrap_or_else(|out| format!("err: {}", out)),
-                    Err(e) => format!("err: {}", e)
+                        .unwrap_or_else(|out| tr!("py.output", err = out)),
+                    Err(e) => tr!("py.output", err = e)
                 }
                 None => "".to_string()
             };
@@ -189,3 +357,83 @@ impl PyContext {
     }
 }
 
+
+#[cfg(test)]
+mod skv_tests {
+    use super::*;
+
+    #[test]
+    fn secret_names_split_on_commas_and_spaces() {
+        assert_eq!(secret_names(Some("db_password, api_token  llm_key")), vec!["db_password", "api_token", "llm_key"]);
+        assert!(secret_names(None).is_empty());
+        assert!(secret_names(Some(" , ")).is_empty());
+    }
+
+    #[test]
+    fn a_function_opens_only_what_it_lists_and_only_with_an_opener() {
+        set_secret_opener(None);
+        let s = Secrets { names: vec!["db_password".into()] };
+        assert!(s.open("db_password").is_err(), "no opener in this host");
+        set_secret_opener(Some(std::sync::Arc::new(|n: &str| if n == "db_password" { Ok(b"s3cret".to_vec()) } else { Err(format!("no secret named {}", n)) })));
+        assert_eq!(s.open("db_password").unwrap(), b"s3cret");
+        assert!(s.open("api_token").is_err(), "not listed");
+        set_secret_opener(None);
+    }
+
+    /// [rotate-key] SECRET.check: the host's answer, for the listed names only, and
+    /// only with a checker
+    #[test]
+    fn a_function_checks_a_value_only_for_what_it_lists() {
+        set_secret_checker(None);
+        let s = Secrets { names: vec!["api_key".into()] };
+        assert!(s.check_raw("api_key", b"old").is_err(), "no checker in this host");
+        set_secret_checker(Some(std::sync::Arc::new(|n: &str, v: &[u8]| match n {
+            "api_key" => Ok(v == b"old" || v == b"new"),
+            _ => Err(format!("no secret named {}", n)),
+        })));
+        assert!(s.check_raw("api_key", b"old").unwrap(), "the old value, during a rotation");
+        assert!(s.check_raw("api_key", b"new").unwrap());
+        assert!(!s.check_raw("api_key", b"other").unwrap());
+        assert!(s.check_raw("db_password", b"old").is_err(), "not listed");
+        set_secret_checker(None);
+    }
+
+    /// [pyo3] SECRET as a function's code meets it: a Secrets in the interpreter, in
+    /// the locals as `invoke` puts it there, its methods called from Python. Only the
+    /// checks made before the secret store, so SECRET_OPENER stays the test above's
+    #[test]
+    fn a_function_sees_secret_in_the_interpreter() {
+        let r: PyResult<(Vec<String>, String, String)> = Python::attach(|py| {
+            let locals = pyo3::types::PyDict::new(py);
+            locals.set_item(SECRET, pyo3::Bound::new(py, Secrets { names: vec!["db_password".into()] })?)?;
+            py.run(c_str!("names = SECRET.names()\n\
+                try:\n    SECRET.get('api_token')\n    text = 'opened'\nexcept PermissionError as e:\n    text = str(e)\n\
+                try:\n    SECRET.get_bytes('api_token')\n    raw = 'opened'\nexcept PermissionError as e:\n    raw = str(e)\n"),
+                None, Some(&locals))?;
+            Ok((locals.get_item("names")?.extract()?, locals.get_item("text")?.extract()?, locals.get_item("raw")?.extract()?))
+        });
+        let (names, text, raw) = r.unwrap_or_else(|e| panic!("{}", e));
+        assert_eq!(names, vec!["db_password"]);
+        // in the messages' language, whichever the environment names
+        for m in [text, raw] {
+            assert_eq!(m, tr!("py.not_listed", name = format!("{:?}", "api_token")));
+        }
+    }
+
+    /// [rotate-key] SECRET.check from Python: an unlisted name refused, a value neither
+    /// str nor bytes refused - both before the secret store, so no checker is needed
+    #[test]
+    fn a_function_meets_secret_check_in_the_interpreter() {
+        let r: PyResult<(String, String)> = Python::attach(|py| {
+            let locals = pyo3::types::PyDict::new(py);
+            locals.set_item(SECRET, pyo3::Bound::new(py, Secrets { names: vec!["api_key".into()] })?)?;
+            py.run(c_str!("try:\n    SECRET.check('db_password', 'x')\n    other = 'checked'\nexcept PermissionError as e:\n    other = str(e)\n\
+                try:\n    SECRET.check('api_key', 42)\n    kind = 'checked'\nexcept TypeError as e:\n    kind = str(e)\n"),
+                None, Some(&locals))?;
+            Ok((locals.get_item("other")?.extract()?, locals.get_item("kind")?.extract()?))
+        });
+        let (other, kind) = r.unwrap_or_else(|e| panic!("{}", e));
+        assert_eq!(other, tr!("py.not_listed", name = format!("{:?}", "db_password")));
+        assert_eq!(kind, tr!("py.check_type"));
+    }
+}

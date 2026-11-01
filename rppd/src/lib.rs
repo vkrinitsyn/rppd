@@ -3,18 +3,18 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use crate::rd_config::RppdNodeCluster;
-use i18n_embed::{
-    fluent::{fluent_language_loader, FluentLanguageLoader},
-    LanguageLoader,
-};
-use lazy_static::lazy_static;
-use rust_embed::RustEmbed;
 use slog::{crit, info};
 use tonic::transport::Server;
 use tonic::transport::server::Router;
 use rppd_common::protogen::rppd::rppd_node_server::*;
 use rppd_common::protogen::rppd::SwitchRequest;
 use rppd_common::protogen::rppg::rppd_trigger_server::RppdTriggerServer;
+
+rust_i18n::i18n!("locales", fallback = "en");
+
+/// [i18n] the messages' language, and tr! - first, so every module below has the macro
+#[macro_use]
+pub mod i18n;
 
 pub mod arg_config;
 
@@ -26,15 +26,22 @@ mod py;
 
 mod rd_rpc;
 mod cron;
+mod cadence;
+mod breaker;
+mod rd_breaker;
+mod shaper;
+mod rd_shaper;
+#[cfg(feature = "tracer")]
+mod metrics;
+#[cfg(feature = "tracer")]
+mod trace;
+mod schema;
 mod rd_monitor;
 mod rd_etcd;
+pub mod router; // [db-tag] one rppd per database behind one port
 
 // re export for use in lib integration
 pub use rppd_common::protogen::rppc::DbEventRequest;
-
-#[derive(RustEmbed)]
-#[folder = "i18n/"]
-struct Localizations;
 
 /// Logging prefix, to start every loggin message with a string to use in a server as a module
 #[cfg(feature = "lib-embedded")]
@@ -44,32 +51,42 @@ const LP: &'static str = "[py] ";
 #[cfg(not(feature = "lib-embedded"))]
 const LP: &'static str = "";
 
-lazy_static! {
-    pub static ref LANGUAGE_LOADER: FluentLanguageLoader = {
-		let loader: FluentLanguageLoader = fluent_language_loader!();
-		loader
-		.load_languages(&Localizations, &[loader.fallback_language().clone()])
-		.unwrap();
-		loader
-    };
 
+const SG: &str = include_str!("../../rppd.yaml");
+
+/// Schema Guard compatible schema definition, to be used in case of use as embedded library, to avoid the need of a separate rppd.yaml file.
+/// This is used to have a lib run without extantion install and trigger function configured.
+/// <li> @extschema@ will be replaced by the schema name to get config table deployed into</li>
+/// <li> Use: MigrationOptions.exclude_triggers to avoid trigegr creatino otherwithe use CREATE EXTENTION instead to create all tables as well </li>
+///
+/// use entered_schema.rppd_function to complete a RPPD instance configuration
+pub fn get_schema_def(schema: &str) -> String {
+    SG.replace("@extschema@", schema)
 }
 
-#[macro_export]
-macro_rules! fl {
-    ($message_id:literal) => {{
-        i18n_embed_fl::fl!($crate::LANGUAGE_LOADER, $message_id)
-    }};
-
-    ($message_id:literal, $($args:expr),*) => {{
-        i18n_embed_fl::fl!($crate::LANGUAGE_LOADER, $message_id, $($args), *)
-    }};
+/// [rppd-tables] rppd's tables created where they are missing, by SchemaGuard over
+/// rppd.yaml - tables and columns, never a trigger (`rppd_event()` is rppd's own
+/// extension's). ytserv calls it for its catalog and each database of C `rppd_dbs`
+/// (yt-pgxt combined-config.md D11). The number of changes made.
+pub async fn ensure_schema(db_url: &str, schema: &str) -> Result<usize, String> {
+    schema::migrate(db_url, schema).await
 }
+
+/// [q-dead] How often a served connection is probed, over HTTP/2 and TCP.
+const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+/// [q-dead] How long a probe may go unanswered before the connection is closed.
+const KEEPALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 impl RppdNodeCluster {
     /// called by main.rs
     pub async fn serve(&self) -> Result<(), String> {
+        // [q-dead] keepalive: the embedded etcd frees what a queue consumer was
+        // handed only when its stream closes, and a client whose host died or
+        // was cut off leaves it half open (etcds agent.md, "Queues")
         let srv = Server::builder()
+            .http2_keepalive_interval(Some(KEEPALIVE))
+            .http2_keepalive_timeout(Some(KEEPALIVE_TIMEOUT))
+            .tcp_keepalive(Some(KEEPALIVE))
             .add_service(RppdNodeServer::new(self.clone()))
             .add_service(RppdTriggerServer::new(self.clone()));
 
@@ -90,26 +107,26 @@ impl RppdNodeCluster {
         
         let bind = adr[0];
         let adr = if bind.chars().next().unwrap_or(' ').is_numeric() {
-            addrsv[0].parse::<SocketAddr>().map_err(|e| format!("parsing {}: {}", bind, e))?
+            addrsv[0].parse::<SocketAddr>().map_err(|e| tr!("lib.bind", bind = bind, err = e))?
         } else {
-            let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(format!("Binding to {}", bind).as_str());
+            let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(&tr!("lib.lookup", bind = bind)).collect();
             if ips.len() == 0 {
-                return Err(format!("{}No IpAddr found {}", LP, bind));
+                return Err(format!("{}{}", LP, tr!("lib.no_ip", bind = bind)));
             }
             SocketAddr::new(ips[0], port)
         };
 
-        #[cfg(feature = "etcd-embeded")] info!(self.log, "Starting RPPD&ETCD server [{}] at: {}", name, bind);
-        #[cfg(not(feature = "etcd-embeded"))] info!(self.log, "Starting RPPD server [{}] at: {}", name, bind);
+        #[cfg(feature = "etcd-embeded")] info!(self.log, "{}", tr!("lib.start_etcd", name = name, bind = bind));
+        #[cfg(not(feature = "etcd-embeded"))] info!(self.log, "{}", tr!("lib.start", name = name, bind = bind));
         let log = self.log.clone();
         tokio::spawn(async move {
             match srv.serve(adr) // .serve_with_incoming_shutdown(uds_stream, rx.map(drop) )
                 .await {
                 Ok(()) => {
-                    info!(log, "{}bye", LP);
+                    info!(log, "{}{}", LP, tr!("lib.bye"));
                 }
                 Err(e) => {
-                    crit!(log, "{} {}", fl!("error"), e);
+                    crit!(log, "{}", tr!("lib.serve", err = e));
                 }
             }
         });
@@ -123,6 +140,67 @@ impl RppdNodeCluster {
             .add_service(RppdTriggerServer::new(self.clone()))
     }
     
+    /// Follow an external leader election.
+    ///
+    /// Embedded in a cluster that already elects a leader (YT Cluster), rppd must
+    /// not run an election of its own: the node the cluster made leader is the
+    /// node that should execute functions. The embedder calls this whenever the
+    /// leader changes, having already pointed `rppd_config.master` at that node.
+    /// Returns true when the flag actually changed.
+    /// [db-tag] Stop this instance - its database has no function left (yt-pgxt
+    /// combined-config.md D11): it runs nothing, its queues are no longer watched and
+    /// its monitor ends; what it holds is dropped with its last handle.
+    pub async fn stop(&self) {
+        self.stopped.store(true, Ordering::Relaxed);
+        self.master.store(false, Ordering::Relaxed);
+        let ws: Vec<_> = self.watchers.write().await.drain().collect();
+        for (q, w) in ws {
+            #[allow(unused_mut)]
+            let mut w = w;
+            if let Err(e) = w.cancel().await {
+                slog::warn!(self.log, "{}{}", LP, tr!("lib.unwatch", queue = q, err = e));
+            }
+        }
+        slog::info!(self.log, "{}{}", LP, tr!("lib.stopped"));
+    }
+
+    /// [db-tag] A request to a peer, carrying this instance's database when it is a
+    /// tagged one - the peer's router hands it to that database's instance
+    pub(crate) async fn peer<T>(&self, m: T) -> tonic::Request<T> {
+        let mut r = tonic::Request::new(m);
+        let tag = self.cfg.read().await.db_tag.clone();
+        if !tag.is_empty() {
+            if let Ok(v) = tag.parse() {
+                r.metadata_mut().insert(router::DB_HEADER, v);
+            }
+        }
+        r
+    }
+
+    pub async fn set_master(&self, master: bool) -> bool {
+        let was = self.master.swap(master, Ordering::Relaxed);
+        if master && !was {
+            // [cadence] a new term: what this node evaluated before is stale now
+            self.master_epoch.fetch_add(1, Ordering::Relaxed);
+        }
+        if was != master {
+            info!(self.log, "{}{}", LP, tr!("lib.follow", was = was, now = master));
+        }
+        was != master
+    }
+
+    /// Whether this node currently executes functions.
+    pub fn is_master(&self) -> bool {
+        self.master.load(Ordering::Relaxed)
+    }
+
+    /// Whether this instance has started: connected, registered and its functions
+    /// loaded. An event that comes before is refused (RPPD-E122 "not started"), so an
+    /// embedder waits for this before it says the instance is up.
+    pub fn is_started(&self) -> bool {
+        self.started.load(Ordering::Relaxed)
+    }
+
     /// giveup master
     pub async fn unmaster(&self) {
         if self.master.load(Ordering::Relaxed) {
@@ -131,8 +209,8 @@ impl RppdNodeCluster {
             for (k, n) in nodes.iter() {
                 if k != &node_id { // in case of self link
                     if let Ok(node) = n {
-                        if let Ok(x) = node.lock().await.switch(SwitchRequest { node_id }).await {
-                            info!(self.log, "{} {:?}", fl!("rppd-switch", from=node_id.to_string(), to=k.to_string()), x);
+                        if let Ok(x) = node.lock().await.switch(self.peer(SwitchRequest { node_id }).await).await {
+                            info!(self.log, "{} {:?}", tr!("lib.switch", from = node_id.to_string(), to = k.to_string()), x);
                             break;
                         }
                     }

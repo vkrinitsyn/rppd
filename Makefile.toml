@@ -1,0 +1,19 @@
+# cargo-make tasks (cargo install cargo-make): the dependency checks
+
+[tasks.audit]
+install_crate = "cargo-audit"
+command = "cargo"
+args = ["audit"]
+workspace = false
+description = "Known vulnerabilities (RustSec) in the dependencies Cargo.lock pins"
+
+[tasks.geiger]
+install_crate = "cargo-geiger"
+command = "cargo"
+# an absolute path: cargo-geiger 0.14 refuses a relative --manifest-path
+args = ["geiger", "--manifest-path", "${CARGO_MAKE_WORKING_DIRECTORY}/rppd/Cargo.toml"]
+# a build of its own: geiger reads every dependency file in the target directory,
+# and an old build's can name a source file since deleted ("No such file")
+env = { CARGO_TARGET_DIR = "target/geiger" }
+workspace = false
+description = "Unsafe code in rppd and rppd-common and in each dependency it uses"

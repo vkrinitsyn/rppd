@@ -30,9 +30,33 @@ impl QueueType {
                             }
                         }
                         line.push_back(PyCall::Local(l));
+                        return;
                     }
-                } // all other conditions handle by q.put_one()
+                }
             }
+            // [breaker] no line to return it to (the event never came through the
+            // queue, or its line was cleaned up): a new line, never a dropped event
+            let fid = f.clone();
+            self.put_one(l, topic, fid, true);
+        }
+    }
+
+    /// [breaker] An event finished: the in-progress mark it left on a `queue` line
+    /// goes, so the line's next event can run. Without this a queue line ran one
+    /// event and then held the rest forever.
+    pub(crate) fn done(&mut self, l: &RpFnLog, topic: TopicDef) {
+        let Some(f) = &l.fn_idp else { return };
+        self.unmark(f.priority, l.id, topic);
+    }
+
+    /// [breaker] The in-progress mark event `id` left on its line goes: it finished
+    /// (`done`), or its breaker holds it (rd_breaker.rs `breaker_gate`). A held event
+    /// is not running, and its mark would keep the events the close drains back
+    /// behind it from ever running.
+    pub(crate) fn unmark(&mut self, priority: i32, id: i64, topic: TopicDef) {
+        let Some(line) = self.0.get_mut(&priority).and_then(|q| q.get_mut(&topic)) else { return };
+        if let Some(i) = line.iter().rposition(|c| matches!(c, PyCall::InProgressSaved(m, _) if *m == id)) {
+            line.remove(i);
         }
     }
 
@@ -79,7 +103,7 @@ impl QueueType {
                     _ => true,
                 } {
                     line.push_back(calls); // return unchanged
-                    break; // take next function topic
+                    continue; // [breaker] this line is busy: take the next topic, not the next priority
                 } else {
                     if let PyCall::Local(mut call) = calls {
                         if call.is_queue(false) {
@@ -204,6 +228,65 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    fn fid(id: i32) -> RpFnId {
+        RpFnId { id, queue: true, priority: 1, save: false, trig_value: false }
+    }
+    fn ev(id: i64, f: &RpFnId) -> RpFnLog {
+        RpFnLog { id, fn_idp: Some(f.clone()), ..RpFnLog::default() }
+    }
+
+    /// [breaker] a queue line runs its next event once the first is done, and a
+    /// line with an event in progress skips only itself, not the other topics
+    #[test]
+    fn a_queue_line_moves_on_when_done_and_a_busy_line_blocks_no_other() {
+        let (a, b) = (fid(1), fid(2));
+        let mut q: QueueType = Default::default();
+        q.put_one(ev(1, &a), "a".into(), a.clone(), false);
+        q.put_one(ev(2, &a), "a".into(), a.clone(), false);
+        q.put_one(ev(3, &b), "b".into(), b.clone(), false);
+        let mut got = vec![q.pick_one().unwrap().id, q.pick_one().unwrap().id];
+        got.sort();
+        assert_eq!(got, vec![1, 3], "line a busy did not stop line b");
+        assert!(q.pick_one().is_none(), "both lines have an event in progress");
+        q.done(&ev(1, &a), "a".into());
+        assert_eq!(q.pick_one().unwrap().id, 2);
+        q.done(&ev(2, &a), "a".into());
+        q.done(&ev(3, &b), "b".into());
+        assert!(q.pick_one().is_none());
+        assert_eq!(q.size(), (0, 0));
+    }
+
+    /// [breaker] an event its breaker holds after the pick is not running: its mark
+    /// goes, and the events the close drains back to the line run, oldest first.
+    /// With the mark left, the line stayed busy and only the probe ran - one of ten
+    /// in topology 92b B4 (2026-10-20)
+    #[test]
+    fn a_held_event_leaves_its_line_free_for_the_drain() {
+        let a = fid(1);
+        let mut q: QueueType = Default::default();
+        q.put_one(ev(1, &a), "a".into(), a.clone(), false);
+        let held = q.pick_one().unwrap();
+        assert!(q.pick_one().is_none(), "picked: its line is busy");
+        q.unmark(a.priority, held.id, "a".into()); // the breaker holds it
+        // the close: the held events back to the line, oldest first
+        q.put_one(ev(1, &a), "a".into(), a.clone(), false);
+        q.put_one(ev(2, &a), "a".into(), a.clone(), false);
+        assert_eq!(q.pick_one().unwrap().id, 1, "the drained events run");
+        q.done(&ev(1, &a), "a".into());
+        assert_eq!(q.pick_one().unwrap().id, 2);
+        q.done(&ev(2, &a), "a".into());
+        assert!(q.pick_one().is_none());
+    }
+
+    /// [breaker] an event returned to a line that no longer exists starts a new one
+    #[test]
+    fn an_event_returned_to_no_line_is_kept() {
+        let a = fid(1);
+        let mut q: QueueType = Default::default();
+        q.return_back(ev(7, &a), "x".into());
+        assert_eq!(q.pick_one().unwrap().id, 7);
+    }
 
     #[tokio::test]
     async fn test_p() {
