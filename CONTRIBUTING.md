@@ -32,7 +32,7 @@ A security problem is not reported in a public issue: write to
 ## Build and test
 
 `protoc` is needed (`rppd-common/build.rs`), and Python's headers for the embedded
-interpreter (pyo3): `apt install protobuf-compiler python3-dev`. The PostgreSQL extension in
+interpreter (pyo3): `apt install protobuf-compiler libprotobuf-dev python3-dev`. The PostgreSQL extension in
 `rppd-pg-c/` builds with PGXS (`pg_config`): see its [README](rppd-pg-c/README.md).
 
 ```

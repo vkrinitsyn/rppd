@@ -46,7 +46,9 @@ jobs:
           path: etcd
       - uses: dtolnay/rust-toolchain@stable
       # etcds' build.rs compiles its protos; pyo3 links libpython
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler python3-dev
+      # libprotobuf-dev: protoc's google/protobuf/*.proto, which etcd-client's protos import
+      # (a recommend of protobuf-compiler, so not there without recommends)
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev python3-dev
       - run: cargo test --manifest-path "$GITHUB_WORKSPACE/rppd/rppd/Cargo.toml" ${{ matrix.features }}
       # the gRPC types, their messages and the language they share with rppd
       - run: cargo test --manifest-path "$GITHUB_WORKSPACE/rppd/rppd-common/Cargo.toml"
@@ -70,7 +72,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler python3-dev
+      # libprotobuf-dev: protoc's google/protobuf/*.proto, which etcd-client's protos import
+      # (a recommend of protobuf-compiler, so not there without recommends)
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev python3-dev
       # the gate is the measured 36.80% (2026-10-29, default + tracer,datafusion) rounded
       # down, not 90%: most of the daemon (rd_config, rd_rpc, rd_monitor, ...) runs only
       # against Postgres and etcd, which no test drives yet. Raise it as tests come.
