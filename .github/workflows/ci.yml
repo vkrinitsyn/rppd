@@ -1,10 +1,10 @@
 name: ci
 
 # The tests with each feature set, and the line coverage of them: under the gate fails
-# the run. The coverage goes to Codecov (the README badge) through GitHub's OIDC token -
-# no secret; the repository is enabled once at codecov.io.
-# No Postgres or etcd service: the tests need neither (rd_fn.rs test_db, the one that
-# reads test_db_url.local, is commented out; the etcd watch tests are in-process).
+# the run. The coverage badge is our own, no third party: drawn from lcov.info and kept
+# on the `badges` branch (the coverage job's last step). No Postgres or etcd service:
+# the tests need neither (rd_fn.rs test_db, the one that reads test_db_url.local, is
+# commented out; the etcd watch tests are in-process).
 on:
   push:
     branches-ignore: ["dependabot/**"]   # their pull request runs it
@@ -56,8 +56,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write   # Codecov's OIDC upload
+      contents: write   # the coverage badge's push, to the badges branch
     steps:
       - uses: actions/checkout@v7
         with:
@@ -79,11 +78,18 @@ jobs:
       # down, not 90%: most of the daemon (rd_config, rd_rpc, rd_monitor, ...) runs only
       # against Postgres and etcd, which no test drives yet. Raise it as tests come.
       - run: cargo llvm-cov --manifest-path "$GITHUB_WORKSPACE/rppd/rppd/Cargo.toml" --features tracer,datafusion --lcov --output-path rppd/lcov.info --fail-under-lines 36
-      - uses: codecov/codecov-action@v7
-        with:
-          # the repository's checkout, for the uploader's git metadata and paths
-          working-directory: rppd
-          files: lcov.info
-          use_oidc: true
-          # a fork's pull request has no token: the gate above holds without the upload
-          fail_ci_if_error: false
+      # [coverage] our own badge, no third party: lcov.info's line coverage, drawn by
+      # .github/coverage-badge.py and kept on the `badges` branch - one commit, replaced
+      # each time - which the README shows. On a push to the default branch only: a pull
+      # request measures and gates, no more
+      - name: coverage badge
+        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pct=$(python3 rppd/.github/coverage-badge.py rppd/lcov.info /tmp/badges/coverage.svg)
+          cd /tmp/badges
+          git init -q -b badges
+          git add coverage.svg
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "coverage ${pct}%"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges

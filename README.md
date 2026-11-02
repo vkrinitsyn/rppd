@@ -1,7 +1,7 @@
 # RPPD - Rust Python Postgres Discovery
 
 [![ci](https://github.com/vkrinitsyn/rppd/actions/workflows/ci.yml/badge.svg)](https://github.com/vkrinitsyn/rppd/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/vkrinitsyn/rppd/graph/badge.svg)](https://codecov.io/gh/vkrinitsyn/rppd)
+[![coverage](https://raw.githubusercontent.com/vkrinitsyn/rppd/badges/coverage.svg?sanitize=true)](https://github.com/vkrinitsyn/rppd/actions/workflows/ci.yml)
 [![audit](https://github.com/vkrinitsyn/rppd/actions/workflows/audit.yml/badge.svg)](https://github.com/vkrinitsyn/rppd/actions/workflows/audit.yml)
 [![license](https://img.shields.io/github/license/vkrinitsyn/rppd.svg)](LICENSE)
 
