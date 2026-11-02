@@ -95,6 +95,18 @@ cron.parse: "RPPD-E082 разбор cron %{id} [%{cron}]: %{err}"
 cron.store_err: "RPPD-E083 не удалось сохранить ошибку задания cron: %{err}"
 cron.clear_err: "RPPD-E084 не удалось очистить ошибку задания cron: %{err}"
 
+# src/rd_test.rs - собственный test(level) функции, только при проверке
+test.deploy: "test: функция %{id} на уровне %{level}, при развертывании"
+test.cron: "test: функция %{id} на уровне %{level}, по cron %{cron}"
+test.passed: "test: функция %{id} на уровне %{level} прошла за %{ms} мс"
+test.failed: "RPPD-E170 test: функция %{id} на уровне %{level} не прошла: %{err}"
+test.context: "RPPD-E171 test: функция %{id}: нет контекста Python для нее: %{err}"
+test.log: "RPPD-E172 test: функция %{id}: ее строка журнала: %{err}"
+test.stamp: "RPPD-E173 test: функция %{id}: сохранение test_timestamp: %{err}"
+test.busy: "test: функция %{id} уже проверяется - эта проверка не запущена"
+test.slow: "test: функция %{id} на уровне %{level} все еще идет после %{sec} с"
+test.cron_row: "RPPD-E174 test: cron %{id}: сохранение его запуска: %{err}"
+
 # src/cadence.rs - cadence runs
 cadence.last_seen: "cadence: last_seen для %{queue}: %{err}"
 cadence.read: "cadence: чтение сохраненных строк: %{err}"
@@ -155,6 +167,8 @@ py.no_store: "RPPD-E145 в этом хосте нет хранилища сек�
 py.not_text: "RPPD-E146 секрет %{name} - не текст UTF-8, используйте SECRET.get_bytes"
 py.check_type: "RPPD-E147 SECRET.check принимает значение как str или bytes"
 py.output: "RPPD-E143 вывод функции не читается: %{err}"
+py.no_test: "RPPD-E148 в коде функции нет test(level)"
+py.test_code: "RPPD-E149 test(level) вернул %{value}, а не 0"
 py.etcd: "RPPD-E140 подключение к etcd v3 [%{host}:%{port}]: %{err}"
 py.df: "RPPD-E141 подключение к планировщику DataFusion/Ballista [%{url}]: %{err}"
 py.clickhouse: "RPPD-E142 подключение к ClickHouse [%{url}]: %{err}"

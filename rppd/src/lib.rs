@@ -37,6 +37,8 @@ mod metrics;
 mod trace;
 mod schema;
 mod rd_monitor;
+/// [test] a function's own test(level), on a check only
+mod rd_test;
 mod rd_etcd;
 pub mod router; // [db-tag] one rppd per database behind one port
 

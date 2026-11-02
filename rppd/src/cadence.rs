@@ -479,7 +479,7 @@ mod tests {
         RpFnCron { id: 9213, fn_id: 9203, cron: "* * * * *".into(), column_name: String::new(), column_value: None,
             cadence: true, timeout_sec: None, started_at: None, finished_at: None, error_msg: None,
             watch_min, retry_sec, watch_q: Some("/q/w".into()), deadline_q: Some("/q/d".into()),
-            state: state.into(), last_seen, since, attempt, cadence_rt: None }
+            state: state.into(), last_seen, since, attempt, test_level: None, cadence_rt: None }
     }
     fn stored(state: CState, since: Option<DateTime<Utc>>, attempt: i32, last_seen: Option<DateTime<Utc>>) -> Stored {
         Stored { state, since, attempt, last_seen }

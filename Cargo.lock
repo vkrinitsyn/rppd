@@ -2030,7 +2030,7 @@ checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
 
 [[package]]
 name = "rppd"
-version = "0.2.17"
+version = "0.2.18"
 dependencies = [
  "async-trait",
  "bb8-postgres",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "rppd-common"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "async-trait",
  "prost",

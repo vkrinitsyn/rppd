@@ -95,6 +95,18 @@ cron.parse: "RPPD-E082 analyse du cron %{id} [%{cron}] : %{err}"
 cron.store_err: "RPPD-E083 échec de l'enregistrement de l'erreur de la tâche cron : %{err}"
 cron.clear_err: "RPPD-E084 échec de l'effacement de l'erreur de la tâche cron : %{err}"
 
+# src/rd_test.rs - le test(level) propre à une fonction, lors d'une vérification seulement
+test.deploy: "test : fonction %{id} au niveau %{level}, au déploiement"
+test.cron: "test : fonction %{id} au niveau %{level}, par le cron %{cron}"
+test.passed: "test : fonction %{id} au niveau %{level} réussie en %{ms} ms"
+test.failed: "RPPD-E170 test : fonction %{id} au niveau %{level} en échec : %{err}"
+test.context: "RPPD-E171 test : fonction %{id} : pas de contexte Python pour elle : %{err}"
+test.log: "RPPD-E172 test : fonction %{id} : sa ligne de journal : %{err}"
+test.stamp: "RPPD-E173 test : fonction %{id} : enregistrement de test_timestamp : %{err}"
+test.busy: "test : la fonction %{id} est déjà en test - ce test n'est pas lancé"
+test.slow: "test : la fonction %{id} au niveau %{level} tourne encore après %{sec} s"
+test.cron_row: "RPPD-E174 test : cron %{id} : enregistrement de son exécution : %{err}"
+
 # src/cadence.rs - cadence runs
 cadence.last_seen: "cadence : last_seen de %{queue} : %{err}"
 cadence.read: "cadence : lecture des lignes enregistrées : %{err}"
@@ -155,6 +167,8 @@ py.no_store: "RPPD-E145 pas de magasin de secrets dans cet hôte (rppd tourne ho
 py.not_text: "RPPD-E146 le secret %{name} n'est pas du texte UTF-8 - utilisez SECRET.get_bytes"
 py.check_type: "RPPD-E147 SECRET.check prend la valeur en str ou bytes"
 py.output: "RPPD-E143 la sortie de la fonction ne se lit pas : %{err}"
+py.no_test: "RPPD-E148 pas de test(level) dans le code de la fonction"
+py.test_code: "RPPD-E149 test(level) a renvoyé %{value}, pas 0"
 py.etcd: "RPPD-E140 connexion à etcd v3 [%{host}:%{port}] : %{err}"
 py.df: "RPPD-E141 connexion à l'ordonnanceur DataFusion/Ballista [%{url}] : %{err}"
 py.clickhouse: "RPPD-E142 connexion à ClickHouse [%{url}] : %{err}"

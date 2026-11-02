@@ -95,6 +95,18 @@ cron.parse: "RPPD-E082 parsing cron %{id} [%{cron}]: %{err}"
 cron.store_err: "RPPD-E083 storing the cron job's error failed: %{err}"
 cron.clear_err: "RPPD-E084 clearing the cron job's error failed: %{err}"
 
+# src/rd_test.rs - a function's own test(level), on a check only
+test.deploy: "test: function %{id} at level %{level}, on deploy"
+test.cron: "test: function %{id} at level %{level}, by cron %{cron}"
+test.passed: "test: function %{id} at level %{level} passed in %{ms} ms"
+test.failed: "RPPD-E170 test: function %{id} at level %{level} failed: %{err}"
+test.context: "RPPD-E171 test: function %{id}: no Python context for it: %{err}"
+test.log: "RPPD-E172 test: function %{id}: its log row: %{err}"
+test.stamp: "RPPD-E173 test: function %{id}: storing test_timestamp: %{err}"
+test.busy: "test: function %{id} is being tested already - this test is not run"
+test.slow: "test: function %{id} at level %{level} still runs after %{sec} s"
+test.cron_row: "RPPD-E174 test: cron %{id}: storing its run: %{err}"
+
 # src/cadence.rs - cadence runs
 cadence.last_seen: "cadence: last_seen of %{queue}: %{err}"
 cadence.read: "cadence: reading the stored rows: %{err}"
@@ -155,6 +167,8 @@ py.no_store: "RPPD-E145 no secret store in this host (rppd runs outside ytserv, 
 py.not_text: "RPPD-E146 secret %{name} is not UTF-8 text - use SECRET.get_bytes"
 py.check_type: "RPPD-E147 SECRET.check takes the value as str or bytes"
 py.output: "RPPD-E143 the function's output does not read: %{err}"
+py.no_test: "RPPD-E148 no test(level) in the function's code"
+py.test_code: "RPPD-E149 test(level) returned %{value}, not 0"
 py.etcd: "RPPD-E140 connecting to etcd v3 [%{host}:%{port}]: %{err}"
 py.df: "RPPD-E141 connecting to the DataFusion/Ballista scheduler [%{url}]: %{err}"
 py.clickhouse: "RPPD-E142 connecting to ClickHouse [%{url}]: %{err}"

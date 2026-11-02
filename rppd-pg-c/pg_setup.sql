@@ -85,6 +85,16 @@ comment on column @extschema@.rppd_function_log.took_ms is 'The rppd_function ru
 comment on column @extschema@.rppd_function_log.output is 'The sysout grabbed from function';
 comment on column @extschema@.rppd_function_log.error_msg is 'The error messages includes function init on connect';
 
+-- [test] the test(level) of the code, run on a check only (rppd adds the columns itself at startup too)
+ALTER TABLE @extschema@.rppd_function
+    ADD COLUMN IF NOT EXISTS test_level int,
+    ADD COLUMN IF NOT EXISTS test_timestamp timestamptz;
+ALTER TABLE @extschema@.rppd_function_log
+    ADD COLUMN IF NOT EXISTS test_level int;
+comment on column @extschema@.rppd_function.test_level is 'The level test(level) of the code runs at, on the master - on deploy: whenever test_timestamp is NULL, a new function or one deployed with test_timestamp = null. Only the definitions of the code run (imports, defs, classes, literal constants), never its body; 0 returned is passed, anything else failed. NULL - no test';
+comment on column @extschema@.rppd_function.test_timestamp is 'When test(level) last ran on deploy, written by rppd. NULL with test_level set - it runs at once; set it NULL with new code, or alone, to test again';
+comment on column @extschema@.rppd_function_log.test_level is 'NULL - a call of the function for an event; else a test(level) run at this level, no event, nothing acknowledged - its took_ms -1 while it runs';
+
 
 -- schedule
 CREATE table if not exists @extschema@.rppd_cron (
@@ -119,6 +129,10 @@ ALTER TABLE @extschema@.rppd_cron
     ADD COLUMN IF NOT EXISTS last_seen timestamptz,
     ADD COLUMN IF NOT EXISTS since timestamptz,
     ADD COLUMN IF NOT EXISTS attempt int not null default 0;
+-- [test] a job that runs the test(level) of its function instead
+ALTER TABLE @extschema@.rppd_cron
+    ADD COLUMN IF NOT EXISTS test_level int;
+comment on column @extschema@.rppd_cron.test_level is 'NULL - the job runs the function (its UPDATE of the target row fires it). Else the job runs the test(level) of the function at this level instead, no target row updated - started_at, finished_at and error_msg say how it went, and a rppd_function_log row with test_level set. Not used by a cadence row';
 
 
 comment on table @extschema@.rppd_cron is 'Periodic function python trigger schedule and cadence';
@@ -142,7 +156,7 @@ comment on column @extschema@.rppd_cron.timeout is 'The if the finished_at is no
 CREATE TRIGGER @extschema@_rppd_cron_event AFTER INSERT OR DELETE ON
     @extschema@.rppd_cron FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
 
-CREATE TRIGGER @extschema@_rppd_cron_event_up AFTER UPDATE OF id, fn_id, cron, column_name, column_value, cadence, timeout_sec, watch_min, retry_sec, watch_q, deadline_q
+CREATE OR REPLACE TRIGGER @extschema@_rppd_cron_event_up AFTER UPDATE OF id, fn_id, cron, column_name, column_value, cadence, timeout_sec, watch_min, retry_sec, watch_q, deadline_q, test_level
     ON @extschema@.rppd_cron FOR EACH ROW EXECUTE PROCEDURE @extschema@.rppd_event();
 
 comment on function @extschema@.rppd_info(node_id integer) is 'Return node status in json format by node_id from rppd_config.id table';

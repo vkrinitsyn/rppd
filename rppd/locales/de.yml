@@ -95,6 +95,18 @@ cron.parse: "RPPD-E082 Parsen von Cron %{id} [%{cron}]: %{err}"
 cron.store_err: "RPPD-E083 Speichern des Fehlers des Cron-Jobs fehlgeschlagen: %{err}"
 cron.clear_err: "RPPD-E084 Löschen des Fehlers des Cron-Jobs fehlgeschlagen: %{err}"
 
+# src/rd_test.rs - das eigene test(level) einer Funktion, nur bei einer Prüfung
+test.deploy: "Test: Funktion %{id} auf Stufe %{level}, beim Deployment"
+test.cron: "Test: Funktion %{id} auf Stufe %{level}, durch Cron %{cron}"
+test.passed: "Test: Funktion %{id} auf Stufe %{level} bestanden in %{ms} ms"
+test.failed: "RPPD-E170 Test: Funktion %{id} auf Stufe %{level} fehlgeschlagen: %{err}"
+test.context: "RPPD-E171 Test: Funktion %{id}: kein Python-Kontext für sie: %{err}"
+test.log: "RPPD-E172 Test: Funktion %{id}: ihre Log-Zeile: %{err}"
+test.stamp: "RPPD-E173 Test: Funktion %{id}: Speichern von test_timestamp: %{err}"
+test.busy: "Test: Funktion %{id} wird schon geprüft - dieser Test läuft nicht"
+test.slow: "Test: Funktion %{id} auf Stufe %{level} läuft nach %{sec} s noch"
+test.cron_row: "RPPD-E174 Test: Cron %{id}: Speichern seines Laufs: %{err}"
+
 # src/cadence.rs - cadence runs
 cadence.last_seen: "Cadence: last_seen von %{queue}: %{err}"
 cadence.read: "Cadence: Lesen der gespeicherten Zeilen: %{err}"
@@ -155,6 +167,8 @@ py.no_store: "RPPD-E145 kein Geheimnisspeicher in diesem Host (rppd läuft auße
 py.not_text: "RPPD-E146 Geheimnis %{name} ist kein UTF-8-Text - SECRET.get_bytes verwenden"
 py.check_type: "RPPD-E147 SECRET.check nimmt den Wert als str oder bytes"
 py.output: "RPPD-E143 die Ausgabe der Funktion lässt sich nicht lesen: %{err}"
+py.no_test: "RPPD-E148 kein test(level) im Code der Funktion"
+py.test_code: "RPPD-E149 test(level) gab %{value} zurück, nicht 0"
 py.etcd: "RPPD-E140 Verbindung zu etcd v3 [%{host}:%{port}]: %{err}"
 py.df: "RPPD-E141 Verbindung zum DataFusion/Ballista-Scheduler [%{url}]: %{err}"
 py.clickhouse: "RPPD-E142 Verbindung zu ClickHouse [%{url}]: %{err}"

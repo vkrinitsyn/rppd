@@ -340,7 +340,13 @@ impl PyContext {
                 None
             };
 
-            let res = py.run(fc.code()?.as_c_str(), None, Some(&locals));
+            // one namespace, as a module's: the code's own defs see its imports, DB and the
+            // rest, as its statements do (a test sees the same, `test`)
+            if !pyo3::types::PyDictMethods::contains(&locals, "__builtins__")? {
+                locals.set_item("__builtins__", py.import("builtins")?)?;
+            }
+            locals.set_item("__name__", "__main__")?;
+            let res = py.run(fc.code()?.as_c_str(), Some(&locals), None);
             self.ltu = Instant::now();
 
             let out = match capture_instance {
@@ -351,9 +357,177 @@ impl PyContext {
                 }
                 None => "".to_string()
             };
+            // its defs hold it as their globals: cleared, not left to the collector
+            pyo3::types::PyDictMethods::clear(&locals);
 
             res.map(|_| out)
         }).map_err(|e| fc.err_msg(e, x))
+    }
+}
+
+/// [test] What a check runs of a function's code: its definitions - the top-level
+/// imports, defs, classes and literal constants (to plain names) - never its body; then
+/// `test(level)` (`test(level=...)`, `test()` when it takes none; awaited when async). Its `print` writes to the check's own buffer - not
+/// sys.stdout, which every call of the process shares. `(what it returned, a test was
+/// found, its output, why it raised)`.
+const TEST_RUNNER: &str = r#"
+import ast
+import asyncio
+import inspect
+import io
+import traceback
+
+KEEP = (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def named(t):
+    return isinstance(t, ast.Name) or (isinstance(t, (ast.Tuple, ast.List)) and all(named(e) for e in t.elts))
+
+
+def literal(n):
+    """an assignment of a literal - a number, a string, a tuple, list, dict or set of them,
+    as ast.literal_eval reads it, nothing executed - to plain names"""
+    if isinstance(n, ast.Assign):
+        targets, value = n.targets, n.value
+    elif isinstance(n, ast.AnnAssign):
+        targets, value = [n.target], n.value
+    else:
+        return False
+    if value is None or not all(named(t) for t in targets):
+        return False
+    try:
+        ast.literal_eval(value)
+        return True
+    except Exception:
+        return False
+
+
+def definitions(code, name):
+    tree = ast.parse(code, name)
+    tree.body = [n for n in tree.body if isinstance(n, KEEP) or literal(n)]
+    return compile(tree, name, "exec")
+
+
+def run(code, name, ns, level):
+    out = io.StringIO()
+
+    def own_print(*a, **k):
+        k.setdefault("file", out)
+        print(*a, **k)
+
+    ns["print"] = own_print
+    try:
+        exec(definitions(code, name), ns)
+        t = ns.get("test")
+        if not callable(t):
+            return None, False, out.getvalue(), None
+        try:
+            params = inspect.signature(t).parameters
+        except (TypeError, ValueError):
+            params = None
+        if params is not None and "level" in params:
+            r = t(level=level)
+        elif params is None or len(params) > 0:
+            r = t(level)
+        else:
+            r = t()
+        if inspect.iscoroutine(r):
+            r = asyncio.run(r)
+        return r, True, out.getvalue(), None
+    except BaseException as e:
+        why = "%s: %s\n%s" % (type(e).__name__, e, "".join(traceback.format_tb(e.__traceback__)))
+        return None, True, out.getvalue(), why.rstrip()
+    finally:
+        # its defs hold ns as their globals: a cycle that would keep DB, the clients and
+        # what the test made until Python's collector ran
+        ns.clear()
+"#;
+
+/// [test] The test of `code` (function `id`) at `level` in `ns`, a namespace of its own:
+/// `ns` is its globals, so its defs see what `ns` holds (DB, ETCD, SECRET), as the body's
+/// statements do. Passed when it returned 0; failed when it returned anything else, raised,
+/// or there is no `test` in the code. (its outcome, what it printed)
+pub(crate) fn run_test(py: Python<'_>, ns: &pyo3::Bound<'_, pyo3::types::PyDict>, code: &str, id: i32, level: i32) -> (Result<(), String>, String) {
+    use pyo3::types::PyDictMethods;
+    let r = (|| -> PyResult<(Result<(), String>, String)> {
+        if !ns.contains("__builtins__")? {
+            ns.set_item("__builtins__", py.import("builtins")?)?;
+        }
+        ns.set_item("__name__", "rppd_test")?;
+        let runner = PyModule::from_code(py, CString::new(TEST_RUNNER)?.as_c_str(), c_str!("rppd_test.py"), c_str!("rppd_test"))?;
+        let (got, found, out, why): (pyo3::Bound<'_, PyAny>, bool, String, Option<String>) =
+            runner.getattr("run")?.call1((code, format!("rppd_fn_{}", id), ns, level))?.extract()?;
+        Ok((match why {
+            Some(why) => Err(why),
+            None => test_outcome(&got, found),
+        }, out))
+    })();
+    r.unwrap_or_else(|e| (Err(e.to_string()), String::new()))
+}
+
+/// [test] what `test` returned, as passed or failed: 0 is passed, any other value failed
+fn test_outcome(got: &pyo3::Bound<'_, PyAny>, found: bool) -> Result<(), String> {
+    if !found {
+        return Err(tr!("py.no_test"));
+    }
+    match got.extract::<i64>() {
+        Ok(0) => Ok(()),
+        Ok(code) => Err(tr!("py.test_code", value = code)),
+        Err(_) => Err(tr!("py.test_code", value = got.repr().map(|r| r.to_string()).unwrap_or_else(|_| "?".into()))),
+    }
+}
+
+impl PyContext {
+    /// [test] Its connections closed: a test's context is its own, made for it and gone
+    /// after (rd_test.rs)
+    pub(crate) fn close(&mut self) {
+        Python::attach(|py| {
+            let _ = self.py_db.bind_borrowed(py).call_method0("close");
+            if let Ok(e) = &self.py_etcd {
+                let _ = e.bind_borrowed(py).call_method0("close");
+            }
+            if let Some(ch) = &self.py_ch {
+                let _ = ch.bind_borrowed(py).call_method0("close");
+            }
+        });
+    }
+
+    /// [test] The function's test(level) (rd_test.rs): its code's definitions run, never its
+    /// body, in a namespace of its own that holds what a call is handed (DB, ETCD, DF, CH,
+    /// SECRET, TOPIC, TABLE) - no event, so no TRIG, keys or VALUE. Whatever it left open
+    /// in DB is rolled back. (its outcome, its stdout)
+    pub(crate) fn test(&mut self, fc: &RpFn, level: i32) -> (Result<(), String>, String) {
+        Python::attach(|py| {
+            let ns = (|| -> PyResult<pyo3::Bound<'_, pyo3::types::PyDict>> {
+                let ns = [
+                    (DB, self.py_db.bind_borrowed(py)),
+                    (TOPIC, fc.topic.clone().into_pyobject(py)?.into_any().as_borrowed()),
+                    (TABLE, fc.schema_table.clone().into_pyobject(py)?.into_any().as_borrowed()),
+                ].into_py_dict(py)?;
+                if let Ok(e) = &self.py_etcd {
+                    ns.set_item(ETCD, e.bind_borrowed(py))?;
+                }
+                #[cfg(feature = "datafusion")]
+                if let Some(df) = &self.py_df {
+                    ns.set_item(DF, df.bind_borrowed(py))?;
+                }
+                if let Some(ch) = &self.py_ch {
+                    ns.set_item(CH, ch.bind_borrowed(py))?;
+                }
+                let names = secret_names(fc.secret_names.as_deref());
+                if !names.is_empty() {
+                    ns.set_item(SECRET, pyo3::Bound::new(py, Secrets { names })?)?;
+                }
+                Ok(ns)
+            })();
+            let r = match ns {
+                Ok(ns) => run_test(py, &ns, &fc.code, fc.id, level),
+                Err(e) => (Err(e.to_string()), String::new()),
+            };
+            let _ = self.py_db.bind_borrowed(py).call_method0("rollback");
+            self.ltu = Instant::now();
+            r
+        })
     }
 }
 
@@ -361,6 +535,68 @@ impl PyContext {
 #[cfg(test)]
 mod skv_tests {
     use super::*;
+
+    /// [test] a check of `code` at `level`, with a DB that counts its rollbacks
+    fn check(code: &str, level: i32) -> (Result<(), String>, String, Vec<String>) {
+        Python::attach(|py| {
+            let fake = PyModule::from_code(py, c_str!("class Db:\n    def __init__(self):\n        self.calls = []\n    def rollback(self):\n        self.calls.append('rollback')\n    def cursor(self):\n        self.calls.append('cursor')\n        return self\n"),
+                c_str!("fake.py"), c_str!("fake")).unwrap();
+            let db = fake.getattr("Db").unwrap().call0().unwrap();
+            let ns = [(DB, db.clone())].into_py_dict(py).unwrap();
+            ns.set_item("BODY", pyo3::types::PyList::empty(py)).unwrap();
+            let (r, out) = run_test(py, &ns, code, 7, level);
+            let calls: Vec<String> = db.getattr("calls").unwrap().extract().unwrap();
+            (r, out, calls)
+        })
+    }
+
+    /// [test] only the definitions run: the body never does, test() sees the imports, the
+    /// constants and what a call is handed (DB), and gets the level
+    #[test]
+    fn a_check_runs_test_and_never_the_body() {
+        let code = "import os\nLIMIT = 3\n\ndef test(level: int = 0) -> int:\n    DB.cursor()\n    print('level', level, os.sep, LIMIT)\n    return 0 if level < LIMIT else 9\n\nBODY.append('ran')\nprint('the body')\nraise SystemExit('the body ran')\n";
+        let (r, out, calls) = check(code, 2);
+        assert_eq!(r, Ok(()), "{}", out);
+        assert_eq!(out.trim(), "level 2 / 3", "test's own output, none of the body's");
+        assert_eq!(calls, ["cursor"], "test used DB");
+        let (r, ..) = check(code, 5);
+        assert_eq!(r, Err(tr!("py.test_code", value = 9)), "a code not 0 is a failure, the level reached it");
+    }
+
+    /// [test] 0 passes; another number, None, an exception or no test fails - with its text
+    #[test]
+    fn a_check_fails_on_anything_but_0() {
+        assert_eq!(check("def test():\n    return 0\n", 1).0, Ok(()), "test() without a level");
+        assert_eq!(check("def test(level):\n    return 4\n", 0).0, Err(tr!("py.test_code", value = 4)));
+        assert_eq!(check("def test(level):\n    pass\n", 0).0, Err(tr!("py.test_code", value = "None")), "None is not 0");
+        assert_eq!(check("x = 1\nprint(x)\n", 0).0, Err(tr!("py.no_test")), "no test, and the body not run");
+        let e = check("def test(level):\n    raise ValueError('the sink is gone')\n", 0).0.unwrap_err();
+        assert!(e.contains("ValueError: the sink is gone") && e.contains("line 2"), "{}", e);
+        let e = check("def test(level):\n    return (\n", 0).0.unwrap_err();
+        assert!(e.contains("SyntaxError"), "a syntax error fails the check: {}", e);
+    }
+
+    /// [test] literal constants of any shape run - a negative number, a tuple, a dict, a
+    /// pair of names - and nothing that executes code; test(*, level), async test too
+    #[test]
+    fn a_check_keeps_literals_and_takes_every_test() {
+        let code = "LIMIT = -1\nTABLES = ('a', 'b')\nMAP = {'k': [1, 2]}\nA, B = 1, 2\nN: int = 5\nSIDE = BODY.append('ran')\n\ndef test(level):\n    return 0 if (LIMIT, TABLES, MAP['k'], A + B, N) == (-1, ('a', 'b'), [1, 2], 3, 5) and 'SIDE' not in globals() else 1\n";
+        assert_eq!(check(code, 0).0, Ok(()));
+        assert_eq!(check("def test(*, level=0):\n    return level - 3\n", 3).0, Ok(()), "a keyword-only level");
+        assert_eq!(check("async def test(level):\n    return level\n", 0).0, Ok(()), "an async test, awaited");
+        assert_eq!(check("async def test(level):\n    return level\n", 7).0, Err(tr!("py.test_code", value = 7)));
+    }
+
+    /// [test] after a check its namespace is cleared: nothing it held stays, for the
+    /// collector or otherwise
+    #[test]
+    fn a_check_leaves_its_namespace_empty() {
+        Python::attach(|py| {
+            let ns = [(DB, 1i32.into_pyobject(py).unwrap().into_any())].into_py_dict(py).unwrap();
+            let _ = run_test(py, &ns, "def test(level):\n    return 0\n", 7, 0);
+            assert_eq!(pyo3::types::PyDictMethods::len(&ns), 0);
+        });
+    }
 
     #[test]
     fn secret_names_split_on_commas_and_spaces() {

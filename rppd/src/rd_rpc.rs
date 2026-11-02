@@ -13,7 +13,6 @@ use rppd_common::protogen::rppd::rppd_node_server::RppdNode;
 use rppd_common::protogen::rppd::{MessageRequest, MessageResponse, SwitchRequest, SwitchResponse};
 use rppd_common::protogen::rppg::rppd_trigger_server::RppdTrigger;
 use crate::arg_config::{CFG_CRON_TABLE, CFG_FN_TABLE};
-#[cfg(feature = "lib-embedded")]
 use crate::arg_config::CFG_FNL_TABLE;
 use crate::rd_config::RppdNodeCluster;
 use crate::rd_fn::RpFnLog;
@@ -156,24 +155,23 @@ impl RppdNodeCluster {
                 }
             }
 
-            if request.table_name.starts_with(&schema) {
-                if request.optional_caller.is_none() {
-                    // TODO broadcast to cluster, set optional_caller to this as master
-                    
-                }
+        }
 
-                if let Err(e) = if request.table_name.ends_with(CFG_TABLE) {
-                    self.reload_hosts(&request).await
-                } else if request.table_name.ends_with(CFG_FN_TABLE) {
-                    self.reload_fs(&Some(request)).await
-                } else if request.table_name.ends_with(CFG_CRON_TABLE) {
-                    self.reload_cron(&Some(request)).await
-                } else { // if request.table_name.ends_with(CFG_FNL_TABLE) {
-                    // no trigger should be there
-                    Ok(())
-                } {
-                    return Err(Status::internal(e));
-                }
+        // rppd's own tables: a change is reloaded whether or not a function is bound to
+        // the table (it was only then, so a changed function, cron row or roster reached
+        // rppd at its next start alone)
+        if self.is_own_table(&schema, &request.table_name) {
+            if let Err(e) = if request.table_name.ends_with(CFG_TABLE) {
+                self.reload_hosts(&request).await
+            } else if request.table_name.ends_with(CFG_FN_TABLE) {
+                self.reload_fs(&Some(request)).await
+            } else if request.table_name.ends_with(CFG_CRON_TABLE) {
+                self.reload_cron(&Some(request)).await
+            } else { // if request.table_name.ends_with(CFG_FNL_TABLE) {
+                // no trigger should be there
+                Ok(())
+            } {
+                return Err(Status::internal(e));
             }
         }
 
@@ -181,7 +179,6 @@ impl RppdNodeCluster {
     }
 
     /// one of rppd's own config tables (roster, functions, cron, log)
-    #[cfg(feature = "lib-embedded")]
     fn is_own_table(&self, schema: &str, table_name: &str) -> bool {
         table_name.starts_with(schema) && [CFG_TABLE, CFG_FN_TABLE, CFG_CRON_TABLE, CFG_FNL_TABLE]
             .iter().any(|t| table_name.ends_with(t))

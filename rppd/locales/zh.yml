@@ -95,6 +95,18 @@ cron.parse: "RPPD-E082 解析 cron %{id} [%{cron}]：%{err}"
 cron.store_err: "RPPD-E083 保存 cron 任务的错误失败：%{err}"
 cron.clear_err: "RPPD-E084 清除 cron 任务的错误失败：%{err}"
 
+# src/rd_test.rs - 函数自身的 test(level)，仅在检查时
+test.deploy: "test：函数 %{id}，级别 %{level}，部署时"
+test.cron: "test：函数 %{id}，级别 %{level}，由 cron %{cron} 触发"
+test.passed: "test：函数 %{id}，级别 %{level}，%{ms} ms 内通过"
+test.failed: "RPPD-E170 test：函数 %{id}，级别 %{level}，未通过：%{err}"
+test.context: "RPPD-E171 test：函数 %{id}：没有它的 Python 上下文：%{err}"
+test.log: "RPPD-E172 test：函数 %{id}：其日志行：%{err}"
+test.stamp: "RPPD-E173 test：函数 %{id}：保存 test_timestamp：%{err}"
+test.busy: "test：函数 %{id} 正在测试中——本次测试不运行"
+test.slow: "test：函数 %{id}，级别 %{level}，%{sec} 秒后仍在运行"
+test.cron_row: "RPPD-E174 test：cron %{id}：保存其运行：%{err}"
+
 # src/cadence.rs - cadence runs
 cadence.last_seen: "cadence：%{queue} 的 last_seen：%{err}"
 cadence.read: "cadence：读取已保存的行：%{err}"
@@ -155,6 +167,8 @@ py.no_store: "RPPD-E145 此宿主没有机密存储（rppd 运行在 ytserv 之�
 py.not_text: "RPPD-E146 机密 %{name} 不是 UTF-8 文本——请用 SECRET.get_bytes"
 py.check_type: "RPPD-E147 SECRET.check 接受 str 或 bytes 类型的值"
 py.output: "RPPD-E143 无法读取函数的输出：%{err}"
+py.no_test: "RPPD-E148 函数代码中没有 test(level)"
+py.test_code: "RPPD-E149 test(level) 返回 %{value}，不是 0"
 py.etcd: "RPPD-E140 连接 etcd v3 [%{host}:%{port}]：%{err}"
 py.df: "RPPD-E141 连接 DataFusion/Ballista 调度器 [%{url}]：%{err}"
 py.clickhouse: "RPPD-E142 连接 ClickHouse [%{url}]：%{err}"

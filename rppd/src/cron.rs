@@ -9,12 +9,13 @@ use crate::rd_config::RppdNodeCluster;
 use crate::cadence::Cadence;
 use crate::LP;
 
+/// `%TEST%`: [test] test_level, or NULL where the table lacks it
 pub(crate) const SELECT_CRON: &str = "select id, fn_id, cron, column_name, column_value, cadence, timeout_sec, started_at, finished_at, error_msg, \
-    watch_min, retry_sec, watch_q, deadline_q, state, last_seen, since, attempt from %SCHEMA%.rppd_cron";
+    watch_min, retry_sec, watch_q, deadline_q, state, last_seen, since, attempt, %TEST% from %SCHEMA%.rppd_cron";
 /// [cadence] a table from before the cadence columns: cron runs, cadence does not
 const SELECT_CRON_LEGACY: &str = "select id, fn_id, cron, column_name, column_value, cadence, timeout_sec, started_at, finished_at, error_msg, \
     0 as watch_min, 0 as retry_sec, null::varchar as watch_q, null::varchar as deadline_q, 'ok'::varchar as state, \
-    null::timestamptz as last_seen, null::timestamptz as since, 0 as attempt from %SCHEMA%.rppd_cron";
+    null::timestamptz as last_seen, null::timestamptz as since, 0 as attempt, %TEST% from %SCHEMA%.rppd_cron";
 pub type CronDTType = DateTime<Utc>;
 
 /// Rust Python Function Cron
@@ -43,6 +44,9 @@ pub struct RpFnCron {
     pub(crate) last_seen: Option<chrono::DateTime<chrono::Utc>>,
     pub(crate) since: Option<chrono::DateTime<chrono::Utc>>,
     pub(crate) attempt: i32,
+    /// [test] a test job: the test(level) of its function at this level, not the UPDATE
+    /// that fires it (rd_test.rs); None: a job
+    pub(crate) test_level: Option<i32>,
     /// the master's runtime of a cadence row, kept across reloads
     #[sqlx(skip)]
     pub(crate) cadence_rt: Option<Cadence>,
@@ -168,9 +172,9 @@ impl RppdNodeCluster {
             if !self.master.load(std::sync::atomic::Ordering::Relaxed) {
                 for (id, dt) in jobs {
                     let next = cron.crons.get(&id).and_then(|c| cron_parser::parse(c.cron.as_str(), &now).ok());
-                    cron.jobs.remove(&dt);
+                    cron.jobs.remove(&(dt, id));
                     if let Some(next) = next {
-                        cron.jobs.insert(next, id);
+                        cron.jobs.insert((next, id));
                     }
                 }
                 return;
@@ -179,15 +183,31 @@ impl RppdNodeCluster {
 
                 #[allow(unused_mut)]
                 if let Some(crontab) = if let Some(mut c) = cron.crons.get_mut(&id) {
-                    let target = match self.fns.read().await.get(&c.fn_id) {
-                        None => { continue; }
-                        Some(pfn) => pfn.schema_table.clone()
-                    };
-                    c.start(&db, &schema, target, &self.log).await
+                    // [test] a test job: the test of its function, not the UPDATE that fires it;
+                    // its row says how it went, as a job's does, and the test's log row (rd_test.rs)
+                    if let Some(level) = c.test_level {
+                        let fc = match self.fns.read().await.get(&c.fn_id) {
+                            None => { continue; }
+                            Some(pfn) => pfn.clone()
+                        };
+                        c.started_at = Some(Utc::now());
+                        c.finished_at = None;
+                        let (me, cid, timeout) = (self.clone(), c.id, c.timeout_sec);
+                        tokio::spawn(async move {
+                            me.test_cron(fc, level, cid, timeout).await;
+                        });
+                        Some(c.cron.clone())
+                    } else {
+                        let target = match self.fns.read().await.get(&c.fn_id) {
+                            None => { continue; }
+                            Some(pfn) => pfn.schema_table.clone()
+                        };
+                        c.start(&db, &schema, target, &self.log).await
+                    }
                 } else { None } {
-                    cron.jobs.remove(&dt);
-                    if let Ok(dt) = cron_parser::parse(crontab.as_str(), &Utc::now()) {
-                        cron.jobs.insert(dt, id);
+                    cron.jobs.remove(&(dt, id));
+                    if let Ok(next) = cron_parser::parse(crontab.as_str(), &Utc::now()) {
+                        cron.jobs.insert((next, id));
                     }
                 }
             }
@@ -205,8 +225,8 @@ impl RppdNodeCluster {
 pub struct CronContext {
     /// loaded cron jobs - only on master node
     pub(crate) crons: BTreeMap<i32, RpFnCron>,
-    /// sorted cron jobs
-    pub(crate) jobs: BTreeMap<CronDTType, i32>,
+    /// sorted cron jobs: by due time, then id - two rows due in one minute both run
+    pub(crate) jobs: std::collections::BTreeSet<(CronDTType, i32)>,
     pub(crate) log: Logger,
     /// [cadence] what a pp never seen counts from
     pub(crate) started: CronDTType,
@@ -237,7 +257,10 @@ impl CronContext {
     /// cleanup
      #[inline]
    pub(crate) async fn reload(&mut self, schema: String, db: Pool<Postgres>) -> Result<(), String> {
-        let cl = match sqlx::query_as::<_, RpFnCron>(sqlx::AssertSqlSafe(SELECT_CRON.replace("%SCHEMA%", schema.as_str())))
+        // [test] test_level where the table has it
+        let test = if crate::rd_test::table_columns(&db, &schema, "rppd_cron").await.contains("test_level") {
+            "test_level" } else { "null::int as test_level" };
+        let cl = match sqlx::query_as::<_, RpFnCron>(sqlx::AssertSqlSafe(SELECT_CRON.replace("%SCHEMA%", schema.as_str()).replace("%TEST%", test)))
             .fetch_all(&db).await {
             Ok(cl) => { self.cadence_on = true; cl }
             Err(first) => {
@@ -245,7 +268,7 @@ impl CronContext {
                 // did not bring up to date at startup (schema.rs): cron runs alone
                 warn!(self.log, "{}{}", LP, tr!("cron.cadence_off", first = first));
                 self.cadence_on = false;
-                sqlx::query_as::<_, RpFnCron>(sqlx::AssertSqlSafe(SELECT_CRON_LEGACY.replace("%SCHEMA%", schema.as_str())))
+                sqlx::query_as::<_, RpFnCron>(sqlx::AssertSqlSafe(SELECT_CRON_LEGACY.replace("%SCHEMA%", schema.as_str()).replace("%TEST%", test)))
                     .fetch_all(&db).await.map_err(|e| e.to_string())?
             }
         };
@@ -271,7 +294,7 @@ impl CronContext {
                     if c.error_msg.is_some() {
                         let _ = c.update_no_err(&db, &schema, &self.log).await;
                     } else {
-                        self.jobs.insert(d, c.id);
+                        self.jobs.insert((d, c.id));
                         self.crons.insert(c.id, c);
                     }
                 }

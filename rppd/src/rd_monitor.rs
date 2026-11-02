@@ -191,9 +191,9 @@ impl RppdNodeCluster {
             match sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(sql_id.as_str())).fetch_one(&self.db()).await {
                 Ok(master_id) => {
                     prev_db_master = Some(master_id); // just in case of use on reset in db
-                    if node_id == master_id {
-                        self.master.store(true, Ordering::Relaxed);
-                    }
+                    // the DB's word, both ways: a node the DB no longer names master stops
+                    // running the master's work (cron jobs, tests)
+                    self.master.store(node_id == master_id, Ordering::Relaxed);
                     self.master_id.store(master_id, Ordering::Relaxed);
 
                     if self.master.load(Ordering::Relaxed) { // run over cluster to collect stats
@@ -277,6 +277,7 @@ impl RppdNodeCluster {
                 self.become_master(prev_db_master).await;
             }
             self.cronjob().await;
+            self.test_tick().await; // [test] due on deploy
             self.cadence_tick().await;
             self.cleanup_fn_logs().await;
             let _ = sleep(Duration::from_millis(5*TIMEOUT_MS)).await;
@@ -291,6 +292,7 @@ impl RppdNodeCluster {
                 break;
             }
             self.cronjob().await;
+            self.test_tick().await; // [test] due on deploy
             self.cadence_tick().await;
             self.cleanup_fn_logs().await;
             let _ = sleep(Duration::from_millis(5*TIMEOUT_MS)).await;

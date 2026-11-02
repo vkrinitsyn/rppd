@@ -95,6 +95,18 @@ cron.parse: "RPPD-E082 cron %{id} [%{cron}] の解析：%{err}"
 cron.store_err: "RPPD-E083 cron ジョブのエラーを保存できませんでした：%{err}"
 cron.clear_err: "RPPD-E084 cron ジョブのエラーを消去できませんでした：%{err}"
 
+# src/rd_test.rs - 関数自身の test(level)、チェック時のみ
+test.deploy: "test：関数 %{id}、レベル %{level}、デプロイ時"
+test.cron: "test：関数 %{id}、レベル %{level}、cron %{cron} による"
+test.passed: "test：関数 %{id}、レベル %{level} は %{ms} ms で合格"
+test.failed: "RPPD-E170 test：関数 %{id}、レベル %{level} は不合格：%{err}"
+test.context: "RPPD-E171 test：関数 %{id}：その Python コンテキストがありません：%{err}"
+test.log: "RPPD-E172 test：関数 %{id}：そのログ行：%{err}"
+test.stamp: "RPPD-E173 test：関数 %{id}：test_timestamp の保存：%{err}"
+test.busy: "test：関数 %{id} はすでにテスト中 - このテストは実行しません"
+test.slow: "test：関数 %{id}、レベル %{level} は %{sec} 秒後もまだ実行中"
+test.cron_row: "RPPD-E174 test：cron %{id}：その実行の保存：%{err}"
+
 # src/cadence.rs - cadence runs
 cadence.last_seen: "cadence：%{queue} の last_seen：%{err}"
 cadence.read: "cadence：保存済みの行の読み込み：%{err}"
@@ -155,6 +167,8 @@ py.no_store: "RPPD-E145 このホストにはシークレットストアがあ�
 py.not_text: "RPPD-E146 シークレット %{name} は UTF-8 テキストではありません - SECRET.get_bytes を使用"
 py.check_type: "RPPD-E147 SECRET.check は値を str か bytes で受け取ります"
 py.output: "RPPD-E143 関数の出力を読めません：%{err}"
+py.no_test: "RPPD-E148 関数のコードに test(level) がありません"
+py.test_code: "RPPD-E149 test(level) が 0 ではなく %{value} を返しました"
 py.etcd: "RPPD-E140 etcd v3 [%{host}:%{port}] への接続：%{err}"
 py.df: "RPPD-E141 DataFusion/Ballista スケジューラー [%{url}] への接続：%{err}"
 py.clickhouse: "RPPD-E142 ClickHouse [%{url}] への接続：%{err}"

@@ -26,8 +26,8 @@ use crate::LP;
 pub(crate) const SELECT_FN: &str = "select id, code, checksum, schema_table, topic, queue, cleanup_logs_min, priority, fn_logging, verbose_debug, %OPTIONAL% from %SCHEMA%.rppd_function ";
 
 /// (column, its value where the table lacks it): [skv] secret_names; [breaker] the
-/// breaker's settings, off by default
-pub(crate) const OPTIONAL_FN_COLUMNS: [(&str, &str); 14] = [
+/// breaker's settings, off by default; [test] no test
+pub(crate) const OPTIONAL_FN_COLUMNS: [(&str, &str); 16] = [
     ("secret_names", "null::text"),
     ("breaker_fails", "0"),
     ("breaker_slow_ms", "0"),
@@ -42,12 +42,17 @@ pub(crate) const OPTIONAL_FN_COLUMNS: [(&str, &str); 14] = [
     ("rate_per_sec", "0"),
     ("burst", "1"),
     ("max_backlog", "0"),
+    ("test_level", "null::int"),
+    ("test_timestamp", "null::timestamptz"),
 ];
 
 /// SELECT_FN for a table with these columns
 pub(crate) fn select_fn(schema: &str, has: &HashSet<String>) -> String {
+    // [test] both test columns, or no test: a level without its timestamp would never be
+    // stamped, and tested at every start
+    let tests = has.contains("test_level") && has.contains("test_timestamp");
     let optional: Vec<String> = OPTIONAL_FN_COLUMNS.iter()
-        .map(|(c, def)| if has.contains(*c) { c.to_string() } else { format!("{} as {}", def, c) })
+        .map(|(c, def)| if has.contains(*c) && (tests || !c.starts_with("test_")) { c.to_string() } else { format!("{} as {}", def, c) })
         .collect();
     SELECT_FN.replace("%SCHEMA%", schema).replace("%OPTIONAL%", optional.join(", ").as_str())
 }
@@ -100,6 +105,12 @@ pub struct RpFn {
     pub(crate) burst: i32,
     /// [shaper] waiting events over this send a backlog notice; 0 = none
     pub(crate) max_backlog: i32,
+    /// [test] the level test(level) of the code runs at - on deploy, and while
+    /// `test_timestamp` is NULL (rd_test.rs); None: no test
+    pub(crate) test_level: Option<i32>,
+    /// [test] when test(level) last ran on deploy; None with a level: due at once - a new
+    /// function, or one deployed with test_timestamp = null
+    pub(crate) test_timestamp: Option<chrono::DateTime<Utc>>,
     // env json, -- TODO reserved for future usage: db pool (read only)/config python param name prefix (mapping)
     // sign json -- TODO reserved for future usage: approve sign, required RSA private key on startup config
 
@@ -251,6 +262,12 @@ impl Default for RpFnLog {
 }
 
 
+/// [test] The level `f`'s test is due at now: a level set, and `test_timestamp` NULL - a
+/// new function, or one deployed (or asked to test again) with test_timestamp = null
+pub(crate) fn test_due(f: &RpFn) -> Option<i32> {
+    f.test_level.filter(|_| f.test_timestamp.is_none())
+}
+
 impl RpFn {
     /// [breaker] this function's breaker settings
     pub(crate) fn breaker_cfg(&self) -> crate::breaker::Cfg {
@@ -379,6 +396,9 @@ impl RpFn {
         self.rate_per_sec = f.rate_per_sec;
         self.burst = f.burst;
         self.max_backlog = f.max_backlog;
+        // [test] its row's own: test_timestamp NULL is a deploy, its test due
+        self.test_level = f.test_level;
+        self.test_timestamp = f.test_timestamp;
         if code_changed {
             // [breaker] the operator's fix: an open breaker probes it at once
             cluster.breaker_code_changed(self);
@@ -576,6 +596,41 @@ mod tests {
     #![allow(warnings, unused)]
 
     use std::fs;
+
+    /// [test] a function's test is due with a level set and no test_timestamp - new, or
+    /// deployed with it NULL; not without a level, nor once it ran
+    #[test]
+    fn a_test_is_due_on_deploy_only() {
+        let f = |level: Option<i32>, stamped: bool| super::RpFn {
+            id: 1, code: String::new(), checksum: String::new(), schema_table: "public.t".into(),
+            topic: String::new(), queue: true, cleanup_logs_min: 0, priority: 1,
+            fn_logging: false, verbose_debug: false, secret_names: None,
+            breaker_fails: 0, breaker_slow_ms: 0, breaker_open_sec: 30, breaker_open_max_sec: 900,
+            max_attempts: 0, notify_q: None, dlq: None,
+            max_parallel: 0, min_parallel: 1, target_ms: 0, rate_per_sec: 0, burst: 1, max_backlog: 0,
+            test_level: level, test_timestamp: stamped.then(chrono::Utc::now) };
+        assert_eq!(super::test_due(&f(Some(2), false)), Some(2), "test_timestamp NULL: at once");
+        assert_eq!(super::test_due(&f(Some(0), false)), Some(0), "level 0 is a level");
+        assert_eq!(super::test_due(&f(Some(1), true)), None, "run, and not deployed since");
+        assert_eq!(super::test_due(&f(None, false)), None, "no level: no test");
+    }
+
+    /// [test] the test columns read where the table has them, NULL where it does not; a
+    /// cron select names test_level either way, no placeholder left
+    #[test]
+    fn the_test_columns_are_optional() {
+        let none = super::select_fn("s", &Default::default());
+        assert!(none.contains("null::int as test_level") && none.contains("null::timestamptz as test_timestamp"), "{}", none);
+        let has: std::collections::HashSet<String> = ["test_level", "test_timestamp"].iter().map(|c| c.to_string()).collect();
+        let both = super::select_fn("s", &has);
+        assert!(both.contains(", test_level, test_timestamp from s.rppd_function"), "{}", both);
+        let half: std::collections::HashSet<String> = ["test_level"].iter().map(|c| c.to_string()).collect();
+        assert!(super::select_fn("s", &half).contains("null::int as test_level"), "a level without its timestamp is no test");
+        for (sql, test) in [(crate::cron::SELECT_CRON, "test_level"), (crate::cron::SELECT_CRON, "null::int as test_level")] {
+            let q = sql.replace("%SCHEMA%", "s").replace("%TEST%", test);
+            assert!(!q.contains('%') && q.contains(&format!("attempt, {} from s.rppd_cron", test)), "{}", q);
+        }
+    }
 
     use sqlx::postgres::PgPoolOptions;
 

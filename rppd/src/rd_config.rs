@@ -171,6 +171,10 @@ pub struct RppdNodeCluster {
     /// Python functions execution by fn id
     /// internal fn topics and queues
     pub(crate) fns: Arc<RwLock<BTreeMap<i32, RpFn>>>,
+    /// [test] the functions whose test runs now (rd_test.rs), one at a time each
+    pub(crate) testing: Arc<std::sync::Mutex<HashSet<i32>>>,
+    /// [test] one test at a time on this instance: a context and a connection each
+    pub(crate) test_slots: Arc<tokio::sync::Semaphore>,
 
     /// tablename -> topic
     pub(crate) fn_tt: Arc<RwLock<HashMap<SchemaTableType, HashSet<TopicType>>>>,
@@ -526,12 +530,14 @@ impl RppdNodeCluster {
             reconfiguration: cfg_sender,
             queue: Arc::new(Default::default()),
             fns: Arc::new(Default::default()),
+            testing: Arc::new(Default::default()),
+            test_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             fn_tt: Arc::new(Default::default()),
             fn_id: Arc::new(Default::default()),
             exec: Arc::new(Default::default()),
             cron: Arc::new(RwLock::new(CronContext {
                 crons: BTreeMap::new(),
-                jobs: BTreeMap::new(),
+                jobs: Default::default(),
                 log: log.clone(),
                 started: chrono::Utc::now(),
                 cadence_on: false,
@@ -820,8 +826,11 @@ impl RppdNodeCluster {
         self.breaker_restore().await;
 
         // load messages to internal queue from fn_log, check timeout and execution status,
+        // [test] a test's row is no event: not run again
+        let tests = if crate::rd_test::table_columns(&self.db(), &schema, "rppd_function_log").await.contains("test_level") {
+            " and test_level is null" } else { "" };
         for l in sqlx::query_as::<_, RpFnLog>(
-            sqlx::AssertSqlSafe(format!("{} where took_ms is null order by id", RpFnLog::select(&schema))))
+            sqlx::AssertSqlSafe(format!("{} where took_ms is null{} order by id", RpFnLog::select(&schema), tests)))
             .fetch_all(&self.db()).await.map_err(|e| e.to_string())? {
             self.queueing(l, false).await; // append loaded on startup
         }
@@ -1081,7 +1090,8 @@ mod tests {
             fn_logging: false, verbose_debug: false, secret_names: None,
             breaker_fails: 0, breaker_slow_ms: 0, breaker_open_sec: 30, breaker_open_max_sec: 900,
             max_attempts: 0, notify_q: None, dlq: None,
-            max_parallel: 0, min_parallel: 1, target_ms: 0, rate_per_sec: 0, burst: 1, max_backlog: 0 }
+            max_parallel: 0, min_parallel: 1, target_ms: 0, rate_per_sec: 0, burst: 1, max_backlog: 0,
+            test_level: None, test_timestamp: None }
     }
 
     /// the maps reload_fs builds: table -> topics, topic -> functions, id -> function

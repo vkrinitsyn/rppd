@@ -1,7 +1,7 @@
 
 [package]
 name = "rppd"
-version = "0.2.17"
+version = "0.2.18"
 authors = ["Vladimir Krinitsyn <v.krinitsyn@gmail.com>"]
 edition = "2024"
 description = "RPPD - Rust Python Postgres"
@@ -46,7 +46,7 @@ rust-i18n = "4"
 cron-parser = "0.12"
 dns-lookup = "4.0"
 shims = "0.1"
-rppd-common = {version = "0.2.3", path = "../rppd-common"}
+rppd-common = {version = "0.2.4", path = "../rppd-common"}
 # [breaker] rppd.yaml applied at startup (schema.rs): SchemaGuard, no hand-written DDL.
 # ^2 is on yaml-rust2 (yaml-rust is unmaintained): its Yaml is what migrate_opt takes
 schema_guard_tokio = "^2"

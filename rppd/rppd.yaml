@@ -229,6 +229,22 @@ database:
                 type: text
                 description: Why this function was last held back or failed to install. NULL when installed.
 
+            # ── [test] the test(level) of the code, run on a check only, never on an event ──
+            - column:
+                name: test_level
+                type: int
+                description: >
+                  The level test(level) of the code runs at, on the master - on deploy: whenever test_timestamp is
+                  NULL, a new function or one deployed with test_timestamp = null. Only the definitions of the code run (imports,
+                  defs, classes, literal constants), never its body; 0 returned is passed, anything else failed.
+                  Each run is a rppd_function_log row with test_level set. NULL - no test
+            - column:
+                name: test_timestamp
+                type: timestamptz
+                description: >
+                  When test(level) last ran on deploy, written by rppd. NULL with test_level set - it runs at once;
+                  set it NULL with new code, or alone, to test again
+
             # ── [breaker] the circuit breaker (yt-pgxt resilience.md, D3/D4) ──
             #
             # All defaulted to off: a function with breaker_fails = 0 and
@@ -381,6 +397,10 @@ database:
             - column:
                 name: error_msg
                 type: text
+            - column:
+                name: test_level
+                type: int
+                description: NULL - a call of the function for an event; else a test(level) run at this level, no event, nothing acknowledged - its took_ms -1 while it runs
 
       # ── scheduled functions ──────────────────────────────────────────────
           triggers:
@@ -471,6 +491,14 @@ database:
                 defaultValue: "0"
                 constraint:
                     nullable: false
+            - column:
+                name: test_level
+                type: int
+                description: >
+                  NULL - the job runs the function (its UPDATE of the target row fires it). Else the job runs the
+                  test(level) of the function at this level instead, no target row updated - started_at,
+                  finished_at and error_msg say how it went, and a rppd_function_log row with test_level set.
+                  Not used by a cadence row
           triggers:
             - trigger:
                 name: "@extschema@_rppd_cron_event"

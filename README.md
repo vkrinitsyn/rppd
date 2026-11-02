@@ -234,6 +234,50 @@ df.show()
 ```
 
 
+## Test a function: `test(level)`
+
+A function's code may define `def test(level: int = 0) -> int`. An event never runs
+it: the body runs, as always. A check runs it, and never the body: rppd runs the
+code's **definitions** only - its top-level imports, `def`s, classes, and literal
+constants assigned to plain names (`LIMIT = -1`, `TABLES = ('a', 'b')`, as
+`ast.literal_eval` reads them) - then `test(level)`, on the master. `test()`,
+`test(*, level=0)` and an `async def test` work too. [test_health_fn.py](test_health_fn.py)
+is an example.
+
+- **What it is given:** what a call is - `DB`, `ETCD`, `DF`, `CH`, `SECRET`,
+  `TOPIC`, `TABLE` - and no event (no `TRIG`, keys or `VALUE`). Its own functions see
+  them too, and the file's imports - as a call's own functions do. What it leaves open
+  in `DB` is rolled back.
+- **Passed or failed:** `0` returned is passed. Any other value - a number is its
+  failure code, `None` too - an exception (its text and traceback), or no `test` in
+  the code is failed. Its `print` is its output.
+- **Not a call:** no event, nothing acknowledged, no breaker, shaper or cadence state.
+  One test at a time per rppd, on a Python context of its own, closed after - one
+  connection more while it runs. A test still running after 60 s (a cron row's
+  `timeout_sec`) is said in the log; it is not stopped.
+- **Not run on a check:** the body, and anything under a top-level `if` or `try` - an
+  import there is not made; put it plain at the top, or in `test`. What a definition
+  evaluates does run: decorators, default argument values, annotations, class bodies.
+
+When it runs, and where its result goes:
+
+| Column | Means |
+|---|---|
+| `rppd_function.test_level` | the level; set, the test runs on deploy: whenever `test_timestamp` is NULL - a new function, or one deployed with `test_timestamp = null`. NULL: no test |
+| `rppd_function.test_timestamp` | when it last ran on deploy, written by rppd; set it NULL - with new code, or alone - to test again |
+| `rppd_cron.test_level` | set, the job runs the test of its function at this level on its schedule, instead of the UPDATE that fires the function; `started_at`, `finished_at` and `error_msg` say how it went, as a job's do |
+| `rppd_function_log.test_level` | each run is a row with it set - `took_ms` (-1 while it runs), `output`, `error_msg`, and `trig_value` `{"cron": "<id>"}` for a cron's; NULL on the rows of calls. A restart does not run a test's row as an event |
+
+rppd sees a change of its tables as the extension's triggers tell it - at once; in YT
+Cluster, where they are not, at rppd's next start.
+
+```sql
+update rppd_function set code = :'code', test_level = 1, test_timestamp = null where id = 12;  -- deploy, tested
+select took_ms, output, error_msg from rppd_function_log where fn_id = 12 and test_level is not null order by id desc limit 1;
+insert into rppd_cron (fn_id, cron, column_name, test_level) values (12, '*/10 * * * *', 'id', 0);  -- every 10 min
+```
+
+
 ## Cadence: a watch on a pipeline process
 
 A pipeline process (pp) that feeds an etcd queue is expected to produce messages
