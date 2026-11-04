@@ -277,6 +277,7 @@ impl RppdNodeCluster {
                 self.become_master(prev_db_master).await;
             }
             self.cronjob().await;
+            self.reload_stale().await; // [own-tables] after the jobs: what is due has fired
             self.test_tick().await; // [test] due on deploy
             self.cadence_tick().await;
             self.cleanup_fn_logs().await;
@@ -292,6 +293,7 @@ impl RppdNodeCluster {
                 break;
             }
             self.cronjob().await;
+            self.reload_stale().await; // [own-tables] after the jobs: what is due has fired
             self.test_tick().await; // [test] due on deploy
             self.cadence_tick().await;
             self.cleanup_fn_logs().await;

@@ -268,14 +268,29 @@ When it runs, and where its result goes:
 | `rppd_cron.test_level` | set, the job runs the test of its function at this level on its schedule, instead of the UPDATE that fires the function; `started_at`, `finished_at` and `error_msg` say how it went, as a job's do |
 | `rppd_function_log.test_level` | each run is a row with it set - `took_ms` (-1 while it runs), `output`, `error_msg`, and `trig_value` `{"cron": "<id>"}` for a cron's; NULL on the rows of calls. A restart does not run a test's row as an event |
 
-rppd sees a change of its tables as the extension's triggers tell it - at once; in YT
-Cluster, where they are not, at rppd's next start.
+rppd sees a change of `rppd_function`, `rppd_cron` or `rppd_config` within seconds, as the
+extension's triggers tell it: its next ticks reload the table whole. Its tables are also
+reloaded whole every minute, for a writer that commits later than those ticks and in YT
+Cluster, which has no such trigger (`rppd_config` there is the cluster's own).
 
 ```sql
 update rppd_function set code = :'code', test_level = 1, test_timestamp = null where id = 12;  -- deploy, tested
 select took_ms, output, error_msg from rppd_function_log where fn_id = 12 and test_level is not null order by id desc limit 1;
 insert into rppd_cron (fn_id, cron, column_name, test_level) values (12, '*/10 * * * *', 'id', 0);  -- every 10 min
 ```
+
+
+## What a function requires of the schema
+
+`rppd_function.required_version` says which of the function's two schema columns a deploy must
+meet. rppd only keeps these columns and reads none of them: forcing them is up to the deploy.
+
+| `required_version` | A deploy must meet |
+|---|---|
+| NULL | nothing |
+| `V` | `min_schema_version`: the database's version from its `V` scripts |
+| `R` | `schema_git_tag`: `R` scripts are repeatable and their content can differ within one version, so the tag says which ran |
+| `B` | both |
 
 
 ## Cadence: a watch on a pipeline process

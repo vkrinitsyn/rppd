@@ -665,9 +665,9 @@ dependencies = [
 
 [[package]]
 name = "etcds"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a79a27ceb5398e4609b17a755f6cf8e7ed0127b2a5fdfbeb2e9efd6ec453270e"
+checksum = "b256a5886f2c8e423e19b020b2bdc46488ce3d823cb1a32aad27a6a6b164a9ce"
 dependencies = [
  "clap",
  "dns-lookup",
@@ -2030,7 +2030,7 @@ checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
 
 [[package]]
 name = "rppd"
-version = "0.2.18"
+version = "0.2.19"
 dependencies = [
  "async-trait",
  "bb8-postgres",

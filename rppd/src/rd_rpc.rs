@@ -14,7 +14,7 @@ use rppd_common::protogen::rppd::{MessageRequest, MessageResponse, SwitchRequest
 use rppd_common::protogen::rppg::rppd_trigger_server::RppdTrigger;
 use crate::arg_config::{CFG_CRON_TABLE, CFG_FN_TABLE};
 use crate::arg_config::CFG_FNL_TABLE;
-use crate::rd_config::RppdNodeCluster;
+use crate::rd_config::{RppdNodeCluster, RELOAD_TICKS};
 use crate::rd_fn::RpFnLog;
 use crate::LP;
 #[cfg(feature = "lib-embedded")]
@@ -154,24 +154,20 @@ impl RppdNodeCluster {
                     return Ok(Response::new(DbEventResponse { saved: false, repeat_with }));
                 }
             }
-
         }
 
-        // rppd's own tables: a change is reloaded whether or not a function is bound to
-        // the table (it was only then, so a changed function, cron row or roster reached
-        // rppd at its next start alone)
+        // [own-tables] a function, cron or roster row changed: only marked. The trigger calls here
+        // inside the writer's transaction and gives the call 100 ms (rppd.h RPPD_TIMEOUT_MS),
+        // its failure the writer's: nothing here may wait on the database - rppd's one
+        // connection may be the writer - and the change is not visible until it commits. The
+        // monitor's tick reloads the table whole, after (reload_stale)
         if self.is_own_table(&schema, &request.table_name) {
-            if let Err(e) = if request.table_name.ends_with(CFG_TABLE) {
-                self.reload_hosts(&request).await
-            } else if request.table_name.ends_with(CFG_FN_TABLE) {
-                self.reload_fs(&Some(request)).await
+            if request.table_name.ends_with(CFG_FN_TABLE) {
+                self.fns_stale.store(RELOAD_TICKS, Ordering::Relaxed);
             } else if request.table_name.ends_with(CFG_CRON_TABLE) {
-                self.reload_cron(&Some(request)).await
-            } else { // if request.table_name.ends_with(CFG_FNL_TABLE) {
-                // no trigger should be there
-                Ok(())
-            } {
-                return Err(Status::internal(e));
+                self.cron_stale.store(RELOAD_TICKS, Ordering::Relaxed);
+            } else if request.table_name.ends_with(CFG_TABLE) {
+                self.hosts_stale.store(RELOAD_TICKS, Ordering::Relaxed);
             }
         }
 

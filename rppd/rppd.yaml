@@ -225,6 +225,13 @@ database:
                 type: varchar(80)
                 description: The exact sge schema revision this body was written against. A tag is identity, not ordering.
             - column:
+                name: required_version
+                type: char(1)
+                description: >
+                    Which of the two above a deploy must meet. V - min_schema_version: the database version from
+                    its V scripts. R - schema_git_tag: R scripts are repeatable, their content can differ within one
+                    version, so the tag says which ran. B - both. NULL - not required. rppd only keeps this column.
+            - column:
                 name: error
                 type: text
                 description: Why this function was last held back or failed to install. NULL when installed.

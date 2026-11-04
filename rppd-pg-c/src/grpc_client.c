@@ -206,7 +206,9 @@ grpc_call(const char *method, const uint8_t *req_data, size_t req_len,
     /* Configure curl */
     curl_easy_reset(g_curl);
     curl_easy_setopt(g_curl, CURLOPT_URL, url);
-    curl_easy_setopt(g_curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_0);
+    /* gRPC on plain http: HTTP/2 from the first byte. CURL_HTTP_VERSION_2_0 asks for an HTTP/1.1
+     * upgrade, which rppd's server does not speak: every call failed ("Unsupported protocol") */
+    curl_easy_setopt(g_curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE);
     curl_easy_setopt(g_curl, CURLOPT_POST, 1L);
     curl_easy_setopt(g_curl, CURLOPT_POSTFIELDS, frame);
     curl_easy_setopt(g_curl, CURLOPT_POSTFIELDSIZE, (long)frame_len);

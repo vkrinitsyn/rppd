@@ -35,7 +35,13 @@ use crate::LP;
 const INSERT_TEST: &str = "insert into %SCHEMA%.rppd_function_log (node_id, fn_id, trig_type, test_level, took_ms, trig_value) \
     values ($1, $2, 4, $3, -1, $4) returning id";
 const UPDATE_TEST: &str = "update %SCHEMA%.rppd_function_log set took_ms = $1, output = $2, error_msg = $3 where id = $4";
-const STAMP_TEST: &str = "update %SCHEMA%.rppd_function set test_timestamp = current_timestamp where id = $1";
+/// [test] the stamp of the code that ran: a deploy meanwhile stays due. Never waiting for its row:
+/// a writer may hold it for minutes, and rppd has one connection. The row's NULL, read back by a
+/// reload, tests again
+const STAMP_TEST: &str = "update %SCHEMA%.rppd_function set test_timestamp = current_timestamp where id = $1 and code = $2 \
+    and id in (select id from %SCHEMA%.rppd_function where id = $1 for update skip locked)";
+/// [test] still due by its row: what this node holds may be a reload behind
+const TEST_STILL_DUE: &str = "select test_timestamp is null and code = $2 from %SCHEMA%.rppd_function where id = $1";
 const CRON_STARTED: &str = "update %SCHEMA%.rppd_cron set started_at = current_timestamp, finished_at = NULL where id = $1";
 const CRON_FINISHED: &str = "update %SCHEMA%.rppd_cron set finished_at = current_timestamp, error_msg = $2 where id = $1";
 /// a test running this long is said, once (a cron row's timeout_sec, when it has one)
@@ -52,10 +58,11 @@ pub(crate) enum TestBy {
 
 /// The columns `table` of `schema` has: a column rppd.yaml declares may be missing from an
 /// install made by the extension's CREATE-only script, or by hand
-pub(crate) async fn table_columns(db: &Pool<Postgres>, schema: &str, table: &str) -> HashSet<String> {
+pub(crate) async fn table_columns(db: &Pool<Postgres>, schema: &str, table: &str) -> Result<HashSet<String>, String> {
     sqlx::query_scalar::<_, String>("select column_name::text from information_schema.columns \
         where table_schema = $1 and table_name = $2")
-        .bind(schema).bind(table).fetch_all(db).await.unwrap_or_default().into_iter().collect()
+        .bind(schema).bind(table).fetch_all(db).await
+        .map(|c| c.into_iter().collect()).map_err(|e| e.to_string())
 }
 
 impl RppdNodeCluster {
@@ -81,9 +88,19 @@ impl RppdNodeCluster {
         for (fc, level) in due {
             let me = self.clone();
             tokio::spawn(async move {
-                let _ = me.test_fn(fc, level, TestBy::Deploy, SLOW).await;
+                if me.test_still_due(&fc).await {
+                    let _ = me.test_fn(fc, level, TestBy::Deploy, SLOW).await;
+                }
             });
         }
+    }
+
+    /// [test] A reload that read the row before a stamp can land after it: the row decides. Not
+    /// run on its word, the next reload has what it says; no answer: run, a test is harmless
+    async fn test_still_due(&self, f: &RpFn) -> bool {
+        let schema = self.cfg.read().await.schema.clone();
+        !matches!(sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(TEST_STILL_DUE.replace("%SCHEMA%", &schema)))
+            .bind(f.id).bind(&f.code).fetch_optional(&self.db()).await, Ok(None) | Ok(Some(false)))
     }
 
     /// [test] A cron row's test: the row marked started, the test of its function, the row
@@ -132,7 +149,7 @@ impl RppdNodeCluster {
             TestBy::Cron(c) => Some(sqlx::types::Json(HashMap::from([("cron".to_string(), c.to_string())]))),
             TestBy::Deploy => None,
         };
-        let row = if table_columns(&db, &schema, "rppd_function_log").await.contains("test_level") {
+        let row = if table_columns(&db, &schema, "rppd_function_log").await.unwrap_or_default().contains("test_level") {
             match sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(INSERT_TEST.replace("%SCHEMA%", &schema)))
                 .bind(self.node_id.load(Ordering::Relaxed)).bind(fc.id).bind(level).bind(origin)
                 .fetch_one(&db).await {
@@ -176,9 +193,9 @@ impl RppdNodeCluster {
                 error!(self.log, "{}{}", LP, tr!("test.log", id = fc.id, err = e));
             }
         }
-        if by == TestBy::Deploy && table_columns(&db, &schema, "rppd_function").await.contains("test_timestamp") {
+        if by == TestBy::Deploy && table_columns(&db, &schema, "rppd_function").await.unwrap_or_default().contains("test_timestamp") {
             if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(STAMP_TEST.replace("%SCHEMA%", &schema)))
-                .bind(fc.id).execute(&db).await {
+                .bind(fc.id).bind(&fc.code).execute(&db).await {
                 error!(self.log, "{}{}", LP, tr!("test.stamp", id = fc.id, err = e));
             }
         }
@@ -187,5 +204,19 @@ impl RppdNodeCluster {
             Err(e) => error!(self.log, "{}{}", LP, tr!("test.failed", id = fc.id, level = level, err = e)),
         }
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [own-tables] columns that cannot be read are an error, not "no such columns": a load on
+    /// the defaults would take the settings of every function
+    #[tokio::test]
+    async fn columns_that_cannot_be_read_are_an_error() {
+        let pool = sqlx::postgres::PgPoolOptions::new().acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none").unwrap();
+        assert!(table_columns(&pool, "s", "rppd_function").await.is_err());
     }
 }

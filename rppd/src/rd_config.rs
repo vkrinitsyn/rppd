@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -51,6 +51,30 @@ pub(crate) const DWN_MASTER: &str = "update %SCHEMA%.%TABLE% set master = NULL w
 
 /// connection timeout. also sleep timeout on monitoring
 pub(crate) const TIMEOUT_MS: u64 = 1000;
+/// [own-tables] how many of the monitor's ticks reload a changed table: its writer's
+/// transaction may not have committed by the first
+pub(crate) const RELOAD_TICKS: u8 = 3;
+/// [own-tables] every so many ticks (5 s each) rppd's tables are reloaded whole, told or not: a
+/// writer may commit after RELOAD_TICKS, a reload may fail, and YT Cluster has no trigger to tell
+pub(crate) const WHOLE_RELOAD_TICKS: u32 = 12;
+
+/// [own-tables] one tick of the whole reload's clock: true when it is time
+pub(crate) fn whole_tick(clock: &AtomicU32) -> bool {
+    clock.fetch_add(1, Ordering::Relaxed).wrapping_add(1) % WHOLE_RELOAD_TICKS == 0
+}
+
+/// [own-tables] one tick of a table marked stale: true while it is to be reloaded
+pub(crate) fn stale_tick(stale: &AtomicU8) -> bool {
+    let n = stale.load(Ordering::Relaxed);
+    // told again just now: that one counts, from its next tick
+    n > 0 && stale.compare_exchange(n, n - 1, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+}
+
+/// [own-tables] a load of every row, not of one row's key: only such a load can tell a
+/// function is gone
+pub(crate) fn reloads_all(x: &Option<DbEventRequest>) -> bool {
+    x.as_ref().map_or(true, |x| x.pks.is_empty())
+}
 /// how long before coming back for an event shelved because the pool was busy
 const RETRY_DRIVE_MS: u64 = 50;
 /// max errors including timeout, each attemnt after sleep of timeout, before
@@ -175,6 +199,12 @@ pub struct RppdNodeCluster {
     pub(crate) testing: Arc<std::sync::Mutex<HashSet<i32>>>,
     /// [test] one test at a time on this instance: a context and a connection each
     pub(crate) test_slots: Arc<tokio::sync::Semaphore>,
+    /// [own-tables] ticks left to reload rppd_function, rppd_cron, the roster: a change was told
+    pub(crate) fns_stale: Arc<AtomicU8>,
+    pub(crate) cron_stale: Arc<AtomicU8>,
+    pub(crate) hosts_stale: Arc<AtomicU8>,
+    /// [own-tables] the whole reload's clock
+    pub(crate) reload_clock: Arc<AtomicU32>,
 
     /// tablename -> topic
     pub(crate) fn_tt: Arc<RwLock<HashMap<SchemaTableType, HashSet<TopicType>>>>,
@@ -341,39 +371,56 @@ impl RppdNodeCluster {
                 if n.active_since.is_none() { // remove?
                     //
                 }
-                let nodes = self.nodes.read().await;
-                match nodes.get(&n.id) {
-                    None => {
-                        self.node_connections.write().await.insert(n.id.clone(), n.connect().await);
-                        self.nodes.write().await.insert(n.id.clone(), n);
-                    }
-                    Some(nx) => { // check if node changed
-                        if nx.host != n.host {
-                            if let Some(nx) = self.node_connections.write().await.insert(n.id.clone(), n.connect().await) {
-                                if let Ok(_nx) = nx {
-                                    // nx.lock().close()
-                                }
-                            }
-                        }
-                    }
+                // [own-tables] no guard held across the writes below: it would wait for itself
+                let known = self.nodes.read().await.get(&n.id).map(|nx| nx.host.clone());
+                if known.as_ref() != Some(&n.host) { // new, or the node changed
+                    let c = n.connect().await;
+                    self.node_connections.write().await.insert(n.id.clone(), c);
+                    self.nodes.write().await.insert(n.id.clone(), n);
                 }
             }
         }
 
-        self.nodes.write().await.retain(|k, _v| !loaded.contains(k));
-        self.node_connections.write().await.retain(|k, _v| !loaded.contains(k));
+        // [own-tables] who is no longer active goes, by a load of every row only
+        if x.pks.is_empty() {
+            self.nodes.write().await.retain(|k, _v| loaded.contains(k));
+            self.node_connections.write().await.retain(|k, _v| loaded.contains(k));
+        }
 
         Ok(())
+    }
+
+    /// [own-tables] The monitor's tick: a table told changed, whole again, for a few ticks - a
+    /// writer has usually committed by then - and every table now and then, for one who has not.
+    /// `|`, not `||`: a table's ticks count on through a whole reload.
+    pub(crate) async fn reload_stale(&self) {
+        let whole = whole_tick(&self.reload_clock);
+        if stale_tick(&self.fns_stale) | whole {
+            if let Err(e) = self.reload_fs(&None).await {
+                warn!(self.log, "{}{}", LP, e);
+            }
+        }
+        if stale_tick(&self.cron_stale) | whole {
+            if let Err(e) = self.reload_cron(&None).await {
+                warn!(self.log, "{}{}", LP, e);
+            }
+        }
+        // embedded, the cluster's own roster is told over its own path
+        if stale_tick(&self.hosts_stale) | (whole && cfg!(not(feature = "lib-embedded"))) {
+            if let Err(e) = self.reload_hosts(&DbEventRequest::default()).await {
+                warn!(self.log, "{}{}", LP, e);
+            }
+        }
     }
 
     /// load all or reload one or remove one function, include load/remove fs_logs
     #[inline]
     pub(crate) async fn reload_fs(&self, x: &Option<DbEventRequest>) -> Result<(), String> {
         let schema = self.cfg.read().await.schema.clone();
-        // [skv], [breaker] the optional columns, where the table has them (SELECT_FN)
-        let has: HashSet<String> = sqlx::query_scalar::<_, String>("select column_name::text from information_schema.columns \
-            where table_schema = $1 and table_name = 'rppd_function'")
-            .bind(&schema).fetch_all(&self.db()).await.unwrap_or_default().into_iter().collect();
+        // [skv], [breaker] the optional columns, where the table has them (SELECT_FN). Not read:
+        // no load, as defaults would take the settings of every function
+        let has = crate::rd_test::table_columns(&self.db(), &schema, "rppd_function").await
+            .map_err(|e| tr!("cfg.load_fns", sql = "information_schema.columns", err = e))?;
         let sql = select_fn(schema.as_str(), &has);
         let sql = if x.is_none() || x.as_ref().unwrap().pks.len() == 0 { sql } else {
             format!("{} where {}", sql, make_sql_cnd(&x.as_ref().unwrap().pks))
@@ -430,7 +477,10 @@ impl RppdNodeCluster {
                 }
             }
         }
-        self.fns.write().await.retain(|k, _v| loaded.contains(&RpFnId { id: *k, ..RpFnId::default() }));
+        // [own-tables] one row's load keeps the other functions
+        if reloads_all(x) {
+            self.fns.write().await.retain(|k, _v| loaded.contains(&RpFnId { id: *k, ..RpFnId::default() }));
+        }
         info!(self.log, "{}{}", LP, tr!("cfg.loaded", fns = self.fns.read().await.len(), tables = self.fn_tt.read().await.len(), topics = self.fn_id.read().await.len()));
         trace!(self.log, "{}{}", LP, tr!("cfg.loaded_all", fns = format!("{:?}", self.fns.read().await), tables = format!("{:?}", self.fn_tt.read().await), topics = format!("{:?}", self.fn_id.read().await)));
         Ok(())
@@ -446,6 +496,11 @@ impl RppdNodeCluster {
     ) -> Result<Self, String> {
         let pool = PgPoolOptions::new()
             .max_connections(1)  // use only on init
+            // its one connection waits on no row for long: the triggers' calls need it within
+            // 100 ms (rppd.h), and the monitor its master check
+            .after_connect(|c, _| Box::pin(async move {
+                sqlx::query("set lock_timeout = '5s'").execute(&mut *c).await.map(|_| ())
+            }))
             .connect(c.db_url().as_str()).await
             .map_err(|e| tr!("cfg.connect_db", url = c.db_url(), err = e))?;
         // [breaker] an installed rppd's tables brought up to date from rppd.yaml
@@ -532,6 +587,10 @@ impl RppdNodeCluster {
             fns: Arc::new(Default::default()),
             testing: Arc::new(Default::default()),
             test_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+            fns_stale: Arc::new(AtomicU8::new(0)),
+            cron_stale: Arc::new(AtomicU8::new(0)),
+            hosts_stale: Arc::new(AtomicU8::new(0)),
+            reload_clock: Arc::new(AtomicU32::new(0)),
             fn_tt: Arc::new(Default::default()),
             fn_id: Arc::new(Default::default()),
             exec: Arc::new(Default::default()),
@@ -734,6 +793,10 @@ impl RppdNodeCluster {
             }
         }
 
+        // not held across the inserts below: a reload's write waits for it, this for the one
+        // connection, and whoever holds that may have its own trigger's call waiting behind the write
+        drop(map);
+
         if non_pk_column.len() > 0 {
             trace!(self.log, "{}", tr!("cfg.repeat", columns = format!("{:?}", non_pk_column)));
             return Ok(ScheduleResult::Repeat(non_pk_column));
@@ -827,7 +890,7 @@ impl RppdNodeCluster {
 
         // load messages to internal queue from fn_log, check timeout and execution status,
         // [test] a test's row is no event: not run again
-        let tests = if crate::rd_test::table_columns(&self.db(), &schema, "rppd_function_log").await.contains("test_level") {
+        let tests = if crate::rd_test::table_columns(&self.db(), &schema, "rppd_function_log").await.unwrap_or_default().contains("test_level") {
             " and test_level is null" } else { "" };
         for l in sqlx::query_as::<_, RpFnLog>(
             sqlx::AssertSqlSafe(format!("{} where took_ms is null{} order by id", RpFnLog::select(&schema), tests)))
@@ -1082,6 +1145,35 @@ mod tests {
         });
         assert_eq!(v, vec![3]);
         assert_eq!(cnt, 2);
+    }
+
+    /// [own-tables] a table told changed reloads for RELOAD_TICKS ticks, then not; told
+    /// again, again. Only a load of every row can tell a function is gone
+    #[test]
+    fn a_changed_table_reloads_for_a_few_ticks() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        let stale = AtomicU8::new(0);
+        assert!(!super::stale_tick(&stale), "not told");
+        stale.store(super::RELOAD_TICKS, Ordering::Relaxed);
+        for _ in 0..super::RELOAD_TICKS {
+            assert!(super::stale_tick(&stale));
+        }
+        assert!(!super::stale_tick(&stale), "done");
+        assert!(super::reloads_all(&None));
+        let key = rppd_common::protogen::rppc::PkColumn::default();
+        let mut one = rppd_common::protogen::rppc::DbEventRequest::default();
+        assert!(super::reloads_all(&Some(one.clone())), "no key: every row");
+        one.pks.push(key);
+        assert!(!super::reloads_all(&Some(one)), "one row's: the others stay");
+    }
+
+    /// [own-tables] told or not, a whole reload comes every WHOLE_RELOAD_TICKS: nothing a slow
+    /// writer committed stays unseen
+    #[test]
+    fn the_tables_are_reloaded_whole_now_and_then() {
+        let clock = std::sync::atomic::AtomicU32::new(0);
+        let whole: Vec<u32> = (1..=2 * super::WHOLE_RELOAD_TICKS).filter(|_| super::whole_tick(&clock)).collect();
+        assert_eq!(whole, vec![super::WHOLE_RELOAD_TICKS, 2 * super::WHOLE_RELOAD_TICKS]);
     }
 
     fn f(id: i32, table: &str, topic: &str) -> super::RpFn {

@@ -49,8 +49,6 @@ CREATE table if not exists @extschema@.rppd_function (
     secret_names text -- [skv] the host's secret store names this function may read as SECRET (rppd.yaml)
 );
 
-select nextval('rppd_function_log_id_seq'::regclass); -- start log id from above 0, see ".id > 0"
-
 comment on table @extschema@.rppd_function is 'Python function code, linked table and topic. If modify, than the cache will be refreshed. Functions triggered for same topic OR table i.e. many fn per event will order by id.';
 comment on column @extschema@.rppd_function.schema_table is 'The rppd_event() must trigger on the corresponding "schema_table" to fire the function, see topic to identify execution order. if start with "/" then will create a watcher to etcd server. The /q/ or /queue/ required for messaging queue if use a rust etcd impl';
 comment on column @extschema@.rppd_function.topic is '"": queue/topic per table (see schema_table); ".{column}": queue per value of the column "id" in this table, the value type must be int; "{any_name}": global queue i.e. multiple tables can share the same queue/topic';
@@ -76,6 +74,8 @@ CREATE table if not exists @extschema@.rppd_function_log (
     error_msg text
 );
 
+select nextval('rppd_function_log_id_seq'::regclass); -- start log id from above 0, see ".id > 0"
+
 comment on table @extschema@.rppd_function_log is 'Python function code execution results for a tracking consistency, durability and cadence';
 comment on column @extschema@.rppd_function_log.node_id is 'The rppd_config.id as a reference to execution node';
 comment on column @extschema@.rppd_function_log.fn_id is 'The rppd_function.id, but no FK to keep performance';
@@ -88,11 +88,13 @@ comment on column @extschema@.rppd_function_log.error_msg is 'The error messages
 -- [test] the test(level) of the code, run on a check only (rppd adds the columns itself at startup too)
 ALTER TABLE @extschema@.rppd_function
     ADD COLUMN IF NOT EXISTS test_level int,
-    ADD COLUMN IF NOT EXISTS test_timestamp timestamptz;
+    ADD COLUMN IF NOT EXISTS test_timestamp timestamptz,
+    ADD COLUMN IF NOT EXISTS required_version char(1);
 ALTER TABLE @extschema@.rppd_function_log
     ADD COLUMN IF NOT EXISTS test_level int;
 comment on column @extschema@.rppd_function.test_level is 'The level test(level) of the code runs at, on the master - on deploy: whenever test_timestamp is NULL, a new function or one deployed with test_timestamp = null. Only the definitions of the code run (imports, defs, classes, literal constants), never its body; 0 returned is passed, anything else failed. NULL - no test';
 comment on column @extschema@.rppd_function.test_timestamp is 'When test(level) last ran on deploy, written by rppd. NULL with test_level set - it runs at once; set it NULL with new code, or alone, to test again';
+comment on column @extschema@.rppd_function.required_version is 'Which of min_schema_version and schema_git_tag a deploy must meet. V - min_schema_version: the database version from its V scripts. R - schema_git_tag: R scripts are repeatable, their content can differ within one version, so the tag says which ran. B - both. NULL - not required. rppd only keeps this column';
 comment on column @extschema@.rppd_function_log.test_level is 'NULL - a call of the function for an event; else a test(level) run at this level, no event, nothing acknowledged - its took_ms -1 while it runs';
 
 
@@ -150,7 +152,7 @@ comment on column @extschema@.rppd_cron.last_seen is 'cadence, kept by rppd: the
 comment on column @extschema@.rppd_cron.since is 'cadence, kept by rppd: when the current state was entered';
 comment on column @extschema@.rppd_cron.attempt is 'cadence, kept by rppd: watch messages sent in this watch';
 comment on column @extschema@.rppd_cron.finished_at is 'The function wont start if finished_at is null, except timeout. If started_at is null, the function never started yet';
-comment on column @extschema@.rppd_cron.timeout is 'The if the finished_at is not null but started_at . If started_at is null, the function never started yet';
+comment on column @extschema@.rppd_cron.timeout_sec is 'The if the finished_at is not null but started_at . If started_at is null, the function never started yet';
 
 -- trigger a refresh
 CREATE TRIGGER @extschema@_rppd_cron_event AFTER INSERT OR DELETE ON
