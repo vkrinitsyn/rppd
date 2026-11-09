@@ -1,0 +1,10 @@
+# cargo audit's settings for this workspace (CI: .github/workflows/audit.yml runs plain `cargo audit`)
+
+[advisories]
+# RUSTSEC-2026-0459, libsqlite3-sys 0.37.0 (C SQLite, medium 6.8): only in Cargo.lock. Cargo locks
+# the optional dependencies of sqlx and sqlx-macros-core whatever features are on, and sqlx 0.9's
+# optional SQLite driver (sqlx-sqlite 0.9.0, the newest, pins libsqlite3-sys 0.37) lands there;
+# rppd builds sqlx with `postgres` alone, so no SQLite is compiled: `cargo tree --target all -e all
+# -i libsqlite3-sys` prints nothing. Drop this once an sqlx-sqlite takes libsqlite3-sys >= 0.39
+# (owner's OK, 2026-11-09).
+ignore = ["RUSTSEC-2026-0459"]
