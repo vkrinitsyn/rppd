@@ -335,7 +335,7 @@ mod tests {
         want.reverse();
         for _ in 0..3 {
             now = (b.until.unwrap() - t(0)).num_seconds();
-            assert_eq!(admit(&mut b, t(now), &c).0, true);
+            assert!(admit(&mut b, t(now), &c).0);
             assert_eq!(step(&mut b, fail("still"), t(now), &c), Some(Transition::Opened));
             assert_eq!((b.until.unwrap() - t(now)).num_seconds(), want.pop().unwrap());
         }

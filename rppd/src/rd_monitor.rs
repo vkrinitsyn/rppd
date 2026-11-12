@@ -76,9 +76,7 @@ impl NodeStat {
     #[inline]
     #[cfg(not(feature = "lib-embedded"))]
     pub(crate) fn new_from(s: StatusResponse) -> Self {
-        let mut n = NodeStat::default();
-        n.node_id = s.node_id;
-        n.online = true;
+        let mut n = NodeStat { node_id: s.node_id, online: true, ..Default::default() };
         n.queue.append(s.queued as u64);
         n.in_proc.append(s.in_proc as u64);
         n
@@ -89,9 +87,7 @@ impl ClusterStat {
     #[inline]
     #[cfg(not(feature = "lib-embedded"))]
     fn apply(&mut self, node: i32) {
-        if !self.node_stat.contains_key(&node) {
-            self.node_stat.insert(node, NodeStat::default());
-        }
+        self.node_stat.entry(node).or_default();
         if let Some(n) = self.node_stat.get_mut(&node) {
             let old_w = n.weight();
             if let Some(set) = self.sort.get_mut(&old_w) {
@@ -99,7 +95,7 @@ impl ClusterStat {
             }
             match self.sort.get_mut(&n.weight) {
                 None => {
-                    let _ = self.sort.insert(n.weight.clone(), new_set(node));
+                    let _ = self.sort.insert(n.weight, new_set(node));
                 }
                 Some(set) => {
                     let _ = set.insert(node);
@@ -112,7 +108,7 @@ impl ClusterStat {
 #[cfg(not(feature = "lib-embedded"))]
 fn new_set(node: i32) -> BTreeSet<i32> {
     let mut set = BTreeSet::new();
-    set.insert(node.clone());
+    set.insert(node);
     set
 }
 
@@ -157,13 +153,12 @@ impl RppdNodeCluster {
     /// call by exec on master node
     pub(crate) async fn pick_node(&self) -> Option<i32> {
         let stat = self.stat.read().await;
-        for (_w, nodes) in &stat.sort {
+        for nodes in stat.sort.values() {
             for id in nodes {
-                if let Some(ok) = self.node_connections.read().await.get(id) {
-                    if ok.is_ok() {
-                        return Some(id.clone());
+                if let Some(ok) = self.node_connections.read().await.get(id)
+                    && ok.is_ok() {
+                        return Some(*id);
                     }
-                }
             }
         }
         None
@@ -181,7 +176,7 @@ impl RppdNodeCluster {
 
         let sql_id = SELECT_MASTER.replace("%SCHEMA%", schema.as_str())
             .replace("%TABLE%", table.as_str());
-        assert!(MAX_ERRORS > 1);
+        const _: () = assert!(MAX_ERRORS > 1); // at build time
         let mut prev_db_master = None;
         let mut errors = 0;
 
@@ -200,7 +195,7 @@ impl RppdNodeCluster {
                         // TODO update self statistics
                         // c.stat.write().await.this_stat.
 
-                        let nodes: Vec<i32> = self.node_ids.read().await.values().map(|v| v.clone()).collect();
+                        let nodes: Vec<i32> = self.node_ids.read().await.values().copied().collect();
                         for id in nodes {
                             let mut err = None;
                             if let Some(node) = self.node_connections.read().await.get(&id) {
@@ -208,14 +203,14 @@ impl RppdNodeCluster {
                                     Ok(n) => {
                                         match n.lock().await.status(self.peer(StatusRequest {
                                             config_schema_table: schema.clone(),
-                                            node_id: id.clone(), fn_log: None }).await).await {
+                                            node_id: id, fn_log: None }).await).await {
                                             Ok(r) => {
                                                 let r = r.into_inner();
                                                 let mut stat = self.stat.write().await;
                                                 match stat.node_stat.get_mut(&id) {
                                                     None => {
                                                         let s: NodeStat = NodeStat::new_from(r);
-                                                        stat.node_stat.insert(id.clone(), s);
+                                                        stat.node_stat.insert(id, s);
                                                     }
                                                     Some(s) => {
                                                         s.queue.append(r.queued as u64);
@@ -232,7 +227,7 @@ impl RppdNodeCluster {
                                 }
                             }
                             if let Some(e) = err {
-                                let _ = self.node_connections.write().await.insert(id.clone(), Err(e));
+                                let _ = self.node_connections.write().await.insert(id, Err(e));
                             }
                         }
                     } else { //  call master for availability

@@ -36,7 +36,6 @@ pub const DEFAULT_PORT: u16 = 8881;
 ///  - use PGPASSWORD env variable (or from file) to postgres connection
 ///  - use PGUSER env variable (or read from file) to postgres connection
 ///  - priority is: env, if no set, than param, than file, than default
-
 pub fn usage() -> String {
     format!("{}\n\n{}\n  {} {}.{}\n{}",
             tr!("args.usage"),
@@ -87,6 +86,9 @@ pub struct RppdConfig {
     /// its calls to its peers carry it (`rppd-db`), for the instance of that
     /// database there. Empty: queues as named, calls untagged.
     pub db_tag: String,
+    /// [rppd-spare] Whether this instance takes queue messages. Off: it opens no etcd watcher,
+    /// for a node whose writes would be refused - a message it took was lost
+    pub consume: bool,
 }
 
 impl Default for RppdConfig {
@@ -125,6 +127,7 @@ impl Default for RppdConfig {
             force_master: false,
             verbose: false,
             db_tag: String::new(),
+            consume: true,
         }
     }
 }
@@ -148,7 +151,6 @@ impl Display for RppdConfig {
 
 impl RppdConfig {
     #[cfg(not(feature = "lib-embedded"))]
-
     /// first arg is an app itself
     pub fn new(input: Vec<String>) -> Result<Self, String> {
         
@@ -160,10 +162,10 @@ impl RppdConfig {
 
         let mut cfg = HashMap::new();
         let mut file_idx = 0;
-        for i in 1..input.len() {
-            match RppdConfig::try_load(&input[i], &mut cfg) {
+        for (i, arg) in input.iter().enumerate().skip(1) {
+            match RppdConfig::try_load(arg, &mut cfg) {
                 Ok(_) => {
-                    if cfg.len() > 0 {
+                    if !cfg.is_empty() {
                         file_idx = i;
                         break;
                     }
@@ -177,38 +179,38 @@ impl RppdConfig {
         let mut df_url = def.df_url.clone();
         let mut ch_url = def.ch_url.clone();
         let mut pwd = def.pwd.clone();
-        let file = if file_idx > 0 { Some((&input[file_idx]).to_string()) } else { None };
+        let file = if file_idx > 0 { Some(input[file_idx].to_string()) } else { None };
         let mut schema = def.schema.clone();
         let mut name = def.name.clone();
-        let mut node = def.node.clone();
-        let mut cluster = def.cluster.clone();
+        let mut node = def.node;
+        let mut cluster = def.cluster;
         let mut bind = def.bind.clone();
         let mut port = DEFAULT_PORT;
         let mut force_master = false;
         let mut verbose = false;
 
-        for i in 1..input.len() {
+        for (i, arg) in input.iter().enumerate().skip(1) {
             if i != file_idx {
-                if input[i].as_str() == "--verbose" {
+                if arg.as_str() == "--verbose" {
                     verbose = true;
                 } else if let Some(v) = RppdConfig::try_parse_env(&cfg, "PGUSER") {
                     user = v;
                 } else if let Some(v) = RppdConfig::try_parse_env(&cfg, "PGPASSWORD") {
                     pwd = v;
-                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "postgresql://", URL) {
+                } else if let Some(v) = RppdConfig::try_parse_cfg(arg, &cfg, "postgresql://", URL) {
                     db_url = v;
-                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "df://", DF) {
+                } else if let Some(v) = RppdConfig::try_parse_cfg(arg, &cfg, "df://", DF) {
                     // Apache DataFusion (aka Ballista) scheduler url, checked before BIND since it also contains ':'
                     df_url = Some(v);
-                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "http://", CH) {
+                } else if let Some(v) = RppdConfig::try_parse_cfg(arg, &cfg, "http://", CH) {
                     // ClickHouse HTTP endpoint, likewise before BIND
                     ch_url = Some(v);
-                } else if input[i].starts_with("--force_master=") {
-                    force_master = input[i].ends_with("=true") || input[i].ends_with("=yes");
-                } else if input[i].starts_with("--name=") {
-                    let v: Vec<&str> = input[i].split("=").collect();
+                } else if arg.starts_with("--force_master=") {
+                    force_master = arg.ends_with("=true") || arg.ends_with("=yes");
+                } else if arg.starts_with("--name=") {
+                    let v: Vec<&str> = arg.split("=").collect();
                     if v.len() > 1 { name = v[1].to_string(); }
-                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, ":", BIND) {
+                } else if let Some(v) = RppdConfig::try_parse_cfg(arg, &cfg, ":", BIND) {
                     let b: Vec<&str> = v.split(":").collect();
                     bind = b[0].to_string();
                     if b.len() > 1 {
@@ -219,17 +221,17 @@ impl RppdConfig {
                             }
                         }
                     }
-                } else if let Some(v) = RppdConfig::try_parse_cfg(&input[i], &cfg, "", SCHEMA) {
+                } else if let Some(v) = RppdConfig::try_parse_cfg(arg, &cfg, "", SCHEMA) {
                     let s: Vec<&str> = v.split(".").collect();
                     if s.len() > 2 {
                         return Err(tr!("args.schema", value = v));
                     }
                     schema = s[0].to_string();
-                } else if input[i].starts_with("--node=") {
-                    let v: Vec<&str> = input[i].split("=").collect();
+                } else if arg.starts_with("--node=") {
+                    let v: Vec<&str> = arg.split("=").collect();
                     if v.len() > 1 { node = Uuid::from_str(v[1]).unwrap_or(node); }
-                } else if input[i].starts_with("--cluster=") {
-                    let v: Vec<&str> = input[i].split("=").collect();
+                } else if arg.starts_with("--cluster=") {
+                    let v: Vec<&str> = arg.split("=").collect();
                     if v.len() > 1 { cluster = Uuid::from_str(v[1]).unwrap_or(cluster); }
                 }
             }
@@ -243,6 +245,7 @@ impl RppdConfig {
             force_master,
             verbose,
             db_tag: String::new(),
+            consume: true,
         })
     }
 
@@ -258,7 +261,7 @@ impl RppdConfig {
     #[inline]
     #[cfg(not(feature = "lib-embedded"))]
     fn try_parse_cfg(input: &String, cfg: &HashMap<String, String>, value: &str, name: &str) -> Option<String> {
-        if value.len() == 0 || input.contains(value) {
+        if value.is_empty() || input.contains(value) {
             Some(input.to_string())
         } else {
             cfg.get(name).map(|v| v.to_string())
@@ -268,7 +271,7 @@ impl RppdConfig {
     /// taking values from env, than file
     #[inline]
     fn _try_parse_uu(input: &String, cfg: &HashMap<String, String>, value: &str, name: &str) -> Option<String> {
-        if value.len() == 0 || input.contains(value) {
+        if value.is_empty() || input.contains(value) {
             Some(input.to_string())
         } else {
             cfg.get(name).map(|v| v.to_string())
@@ -309,22 +312,20 @@ impl RppdConfig {
     fn load(f: File, cfg: &mut HashMap<String, String>) {
         let reader = BufReader::new(f);
         for line in reader.lines() {
-            if let Ok(l) = line {
-                if let Some(i) = l.chars().position(|c| c == '=' || c == ':' || c == '#' || c == ';' || c == '/' || c == '[') {
-                    if l.as_bytes()[i] != b'#' && l.as_bytes()[i] != b';' && l.as_bytes()[i] != b'/' && l.as_bytes()[i] != b'[' {
+            if let Ok(l) = line
+                && let Some(i) = l.chars().position(|c| c == '=' || c == ':' || c == '#' || c == ';' || c == '/' || c == '[')
+                    && l.as_bytes()[i] != b'#' && l.as_bytes()[i] != b';' && l.as_bytes()[i] != b'/' && l.as_bytes()[i] != b'[' {
                         let key = l[..i].trim().to_lowercase();
                         let value = l[i + 1..].trim().to_string();
                         cfg.insert(key, value);
                     }
-                }
-            }
         }
     }
 
 
     #[allow(dead_code)]
     fn parse_table_name(src: &String, t: &String) -> String {
-        if t.len() >= 1 {
+        if !t.is_empty() {
             if t.ends_with(".") {
                 format!("{}{}", t, CFG_TABLE)
             } else if t.starts_with(".") {
@@ -380,6 +381,7 @@ impl RppdConfig {
 
     /// Apache DataFusion (aka Ballista) scheduler url ready to pass to `BallistaSessionContext`, ex: "df://localhost:50050".
     /// None if not configured, disabling the `DF` python client
+    #[allow(dead_code)] // the DF python client is not wired to it yet: config.rs reads the field itself
     pub(crate) fn df_url(&self) -> Option<String> {
         self.df_url.as_ref().map(|v| if v.starts_with("df://") { v.clone() } else { format!("df://{}", v) })
     }

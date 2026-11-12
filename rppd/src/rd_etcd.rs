@@ -68,7 +68,7 @@ pub(crate) struct EtcdConnector {
 }
 
 #[cfg(feature = "etcd-external")]
-const DEFAULT_ENDPOINT: &'static str = "localhost:2379";
+const DEFAULT_ENDPOINT: &str = "localhost:2379";
 
 /// client-assigned watch id: every queue uses its own watch stream, so a fixed id is unique per stream
 #[cfg(feature = "etcd-external")]
@@ -101,7 +101,7 @@ impl EtcdConnector {
 
         EtcdConnector {
             etcd,
-            client_id: cfg.node.clone(),
+            client_id: cfg.node,
             host: cfg.bind.clone(),
             port: cfg.port.to_string(),
             log: log.clone(),
@@ -113,7 +113,7 @@ impl EtcdConnector {
     pub(crate) async fn new(node: EtcdNode, c: &RppdConfig, log: &slog::Logger) -> Self {
         EtcdConnector {
             etcd: Ok(node),
-            client_id: c.node.clone(),
+            client_id: c.node,
             host: c.bind.clone(),
             port: c.port.to_string(),
             log: log.clone(),
@@ -132,7 +132,7 @@ impl EtcdConnector {
 
         EtcdConnector {
             etcd,
-            client_id: cfg.node.clone(),
+            client_id: cfg.node,
             host: cfg.bind.clone(),
             port: cfg.port.to_string(),
             log: log.clone(),
@@ -141,10 +141,10 @@ impl EtcdConnector {
 
     /// [cadence] Put a message on a queue: `key` is a producer key, `<q>/producer/<id>`.
     #[cfg(not(feature = "etcd-external"))]
-    pub(crate) async fn put(&mut self, key: &String, value: Vec<u8>) -> Result<(), String> {
+    pub(crate) async fn put(&mut self, key: &str, value: Vec<u8>) -> Result<(), String> {
         match &self.etcd {
             Ok(etcd) => etcd.put(Request::new(PutRequest {
-                key: key.clone().into_bytes(), value, ..Default::default()
+                key: key.as_bytes().to_vec(), value, ..Default::default()
             })).await.map(|_| ()).map_err(|e| e.to_string()),
             Err(e) => Err(tr!("etcd.not_ready", err = e)),
         }
@@ -152,9 +152,9 @@ impl EtcdConnector {
 
     /// [cadence] Put a message on a queue of an external etcd.
     #[cfg(feature = "etcd-external")]
-    pub(crate) async fn put(&mut self, key: &String, value: Vec<u8>) -> Result<(), String> {
+    pub(crate) async fn put(&mut self, key: &str, value: Vec<u8>) -> Result<(), String> {
         match &mut self.etcd {
-            Ok(etcd) => etcd.put(key.clone(), value, None).await.map(|_| ()).map_err(|e| e.to_string()),
+            Ok(etcd) => etcd.put(key, value, None).await.map(|_| ()).map_err(|e| e.to_string()),
             Err(e) => Err(tr!("etcd.not_ready", err = e)),
         }
     }
@@ -163,13 +163,12 @@ impl EtcdConnector {
     /// There is no queue in external i.e. no asknoledge required
     #[cfg(not(feature = "etcd-external"))]
     pub(crate) async fn aks(&self, key: &String) {
-        if let Ok(etcd) = &self.etcd {
-            if let Err(e) = etcd.delete_range(Request::new(DeleteRangeRequest{
+        if let Ok(etcd) = &self.etcd
+            && let Err(e) = etcd.delete_range(Request::new(DeleteRangeRequest{
                 key: key.clone().into_bytes(), ..Default::default()
             })).await {
                 error!(self.log, "{}{}", LP, tr!("etcd.cleanup", key = key, err = e));
             }
-        }
     }
 
 }
@@ -190,6 +189,10 @@ impl RpFn {
         if !q.is_queue() {
             return;
         }
+        // [rppd-spare] no watcher, so etcd hands this node no message to lose
+        if !cluster.consume.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
 
         let mut con = cluster.etcd.write().await;
         let log = con.log.clone();
@@ -201,11 +204,10 @@ impl RpFn {
                     // delete queue_name
                     #[allow(unused_mut)]
                     if let Some(mut w) = cluster.watchers.write().await
-                        .remove(&self.schema_table) {
-                        if let Err(e) = w.cancel().await {
+                        .remove(&self.schema_table)
+                        && let Err(e) = w.cancel().await {
                             warn!(log, "{}{}", LP, tr!("etcd.unwatch", queue = &self.schema_table, err = e));
                         }
-                    }
                 }
                 if watchers.contains_key(name) {
                     return; // already exists
@@ -218,10 +220,10 @@ impl RpFn {
         }
 
         let queue_name = new_name.unwrap_or(&self.schema_table).to_owned();
-        let client_id = con.client_id.clone();
+        let client_id = con.client_id;
         // [db-tag] the queue in this instance's namespace; the watcher is kept by its name
         let queue_consumer_name = format!("{}/consumer/{}", cluster.cfg.read().await.qkey(&queue_name),
-            &client_id.as_hyphenated());
+            client_id.as_hyphenated());
         match &mut con.etcd {
             Ok(etcd) => {
                 let sender = cluster.kv_sender.clone();
@@ -354,11 +356,10 @@ async fn consume(mut responses: Receiver<Result<WatchResponse, tonic::Status>>, 
                     match req.send(WatchRequest { request_union: Some(watch_request::RequestUnion::CreateRequest(
                         WatchCreateRequest { key: consumer_key.clone().into_bytes(), watch_id: id, ..Default::default() })) }).await {
                         Ok(()) => {
-                            if let Some(ww) = watchers.write().await.get_mut(&queue_name) {
-                                if ww.sender.same_channel(&req) {
+                            if let Some(ww) = watchers.write().await.get_mut(&queue_name)
+                                && ww.sender.same_channel(&req) {
                                     ww.watch_id = id;
                                 }
-                            }
                         }
                         Err(e) => error!(log, "{}{}", LP, tr!("etcd.rewatch", queue = queue_name, err = e)),
                     }
@@ -368,8 +369,8 @@ async fn consume(mut responses: Receiver<Result<WatchResponse, tonic::Status>>, 
                     again = Again::default(); // it is consuming again
                 }
                 for e in w.events {
-                    if let Some(kv) = e.kv {
-                        if let Err(e) = sender.send(MessageRequest {
+                    if let Some(kv) = e.kv
+                        && let Err(e) = sender.send(MessageRequest {
                             key: String::from_utf8_lossy(&kv.key).to_string(),
                             value: kv.value.to_vec(),
                             // [otel] etcds' KeyValue carries no trace (its proto
@@ -378,7 +379,6 @@ async fn consume(mut responses: Receiver<Result<WatchResponse, tonic::Status>>, 
                         }).await {
                             error!(log, "{}{}", LP, tr!("etcd.consume", queue = queue_name, err = e));
                         }
-                    }
                 }
             }
             Err(e) => {
@@ -445,8 +445,8 @@ where S: tokio_stream::Stream<Item = Result<etcd_client::WatchResponse, etcd_cli
                     again = Again::default(); // it is consuming again
                 }
                 for e in v.events() {
-                    if let Some(kv) = e.kv() {
-                        if let Err(e) = sender.send(MessageRequest {
+                    if let Some(kv) = e.kv()
+                        && let Err(e) = sender.send(MessageRequest {
                             key: kv.key_str().unwrap_or("").to_string(),
                             value: kv.value().to_vec(),
                             // an external etcd keeps no trace with a message
@@ -454,7 +454,6 @@ where S: tokio_stream::Stream<Item = Result<etcd_client::WatchResponse, etcd_cli
                         }).await {
                             error!(log, "{}{}", LP, tr!("etcd.consume", queue = queue_name, err = e));
                         }
-                    }
                 }
             }
             Err(e) => {

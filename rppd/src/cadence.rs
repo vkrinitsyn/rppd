@@ -161,9 +161,9 @@ pub(crate) fn due_after(cron: &str, from: &DateTime<Utc>) -> Result<DateTime<Utc
 pub(crate) fn step(cron: &str, watch_min: i32, retry_sec: i32, st: &mut Cadence,
                    now: DateTime<Utc>, baseline: DateTime<Utc>) -> Result<Option<Emit>, String> {
     // a message after the state was entered: back to ok
-    if st.state != CState::Ok {
-        if let (Some(seen), Some(since)) = (st.last_seen, st.since) {
-            if seen > since {
+    if st.state != CState::Ok
+        && let (Some(seen), Some(since)) = (st.last_seen, st.since)
+            && seen > since {
                 let was = st.state;
                 st.state = CState::Ok;
                 st.since = Some(now);
@@ -171,8 +171,6 @@ pub(crate) fn step(cron: &str, watch_min: i32, retry_sec: i32, st: &mut Cadence,
                 st.last_sent = None;
                 return Ok(Some(Emit::Ok { was }));
             }
-        }
-    }
     match st.state {
         CState::Ok => {
             let from = st.last_seen.unwrap_or(baseline);

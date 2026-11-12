@@ -55,9 +55,8 @@ mod tests {
             match y {
                 yaml_rust2::Yaml::Hash(h) => for (k, v) in h {
                     let k = k.as_str().unwrap_or("?");
-                    if k == "description" {
-                        if let Some(t) = v.as_str() { if t.contains('\'') { bad.push(format!("{}: {}", path, t)); } }
-                    }
+                    if k == "description"
+                        && let Some(t) = v.as_str() && t.contains('\'') { bad.push(format!("{}: {}", path, t)); }
                     walk(v, &format!("{}/{}", path, k), bad);
                 },
                 yaml_rust2::Yaml::Array(a) => for (i, v) in a.iter().enumerate() { walk(v, &format!("{}[{}]", path, i), bad); },
@@ -100,7 +99,7 @@ mod tests {
                 if index.is_badvalue() || index.is_null() || index.as_bool().is_some() {
                     continue;
                 }
-                if index["name"].as_str().map_or(true, |n| n.trim().is_empty()) {
+                if index["name"].as_str().is_none_or(|n| n.trim().is_empty()) {
                     ignored.push(format!("{}.{}", table, col));
                 } else if index["unique"].as_bool() == Some(true) {
                     unique.push(format!("{}.{}", table, col));

@@ -34,11 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let f = f.to_str().unwrap_or("");
         if f.ends_with(EXT) {
             let f = f[0..f.len() - EXT.len()].to_string();
-            let _ = do_build(f.as_str())?;
+            do_build(f.as_str())?;
             mf.push_str(format!("pub mod {};\n", f).as_str())
         }
     }
-    let _ = fs::write(format!("src/{}/mod.rs", TEMP_GEN_DIR).as_str(), mf)?;
+    fs::write(format!("src/{}/mod.rs", TEMP_GEN_DIR).as_str(), mf)?;
     let _ = fs::remove_dir_all(TEMP_GEN_DIR);
     Ok(())
 }
@@ -50,7 +50,7 @@ fn do_build(name: &str) -> io::Result<()> {
     let  dest = format!("src/{}/{}.rs", TEMP_GEN_DIR, name);
     println!("cargo:info=building: {} to {}", file, dest);
 
-    let _ = tonic_prost_build::configure()
+    tonic_prost_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .out_dir(PathBuf::from(TEMP_GEN_DIR))
         .compile_protos(&[file.as_str()], &[DIR])?;
@@ -69,7 +69,7 @@ fn do_build(name: &str) -> io::Result<()> {
             // [i18n] tonic's "Service was not ready" in the messages' language (src/i18n.rs)
             contents = contents.replace("format!(\"Service was not ready: {}\", e.into())", "crate::i18n::not_ready(e.into())");
 
-            let _ = fs::write(dest.as_str(), contents)?;
+            fs::write(dest.as_str(), contents)?;
             println!("cargo:info=wrote: {}", dest);
         }
         Err(e) => {

@@ -186,19 +186,17 @@ impl RppdNodeCluster {
             Err(e) => (Err(tr!("test.context", id = fc.id, err = e)), String::new()),
         };
         let took = started.elapsed().as_millis() as i64;
-        if let Some(id) = row {
-            if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(UPDATE_TEST.replace("%SCHEMA%", &schema)))
+        if let Some(id) = row
+            && let Err(e) = sqlx::query(sqlx::AssertSqlSafe(UPDATE_TEST.replace("%SCHEMA%", &schema)))
                 .bind(took).bind(Some(output.as_str()).filter(|o| !o.is_empty())).bind(outcome.as_ref().err())
                 .bind(id).execute(&db).await {
                 error!(self.log, "{}{}", LP, tr!("test.log", id = fc.id, err = e));
             }
-        }
-        if by == TestBy::Deploy && table_columns(&db, &schema, "rppd_function").await.unwrap_or_default().contains("test_timestamp") {
-            if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(STAMP_TEST.replace("%SCHEMA%", &schema)))
+        if by == TestBy::Deploy && table_columns(&db, &schema, "rppd_function").await.unwrap_or_default().contains("test_timestamp")
+            && let Err(e) = sqlx::query(sqlx::AssertSqlSafe(STAMP_TEST.replace("%SCHEMA%", &schema)))
                 .bind(fc.id).bind(&fc.code).execute(&db).await {
                 error!(self.log, "{}{}", LP, tr!("test.stamp", id = fc.id, err = e));
             }
-        }
         match &outcome {
             Ok(()) => info!(self.log, "{}{}", LP, tr!("test.passed", id = fc.id, level = level, ms = took)),
             Err(e) => error!(self.log, "{}{}", LP, tr!("test.failed", id = fc.id, level = level, err = e)),

@@ -60,7 +60,7 @@ pub(crate) const WHOLE_RELOAD_TICKS: u32 = 12;
 
 /// [own-tables] one tick of the whole reload's clock: true when it is time
 pub(crate) fn whole_tick(clock: &AtomicU32) -> bool {
-    clock.fetch_add(1, Ordering::Relaxed).wrapping_add(1) % WHOLE_RELOAD_TICKS == 0
+    clock.fetch_add(1, Ordering::Relaxed).wrapping_add(1).is_multiple_of(WHOLE_RELOAD_TICKS)
 }
 
 /// [own-tables] one tick of a table marked stale: true while it is to be reloaded
@@ -73,7 +73,7 @@ pub(crate) fn stale_tick(stale: &AtomicU8) -> bool {
 /// [own-tables] a load of every row, not of one row's key: only such a load can tell a
 /// function is gone
 pub(crate) fn reloads_all(x: &Option<DbEventRequest>) -> bool {
-    x.as_ref().map_or(true, |x| x.pks.is_empty())
+    x.as_ref().is_none_or(|x| x.pks.is_empty())
 }
 /// how long before coming back for an event shelved because the pool was busy
 const RETRY_DRIVE_MS: u64 = 50;
@@ -118,8 +118,10 @@ impl RpHost {
 /// is '"": queue per table; => schema.table
 /// ".{column_name}": queue per value of the column in this table; => schema.table.column
 /// "{any_name}": global queue'; => ..name
-
 pub(crate) type TopicType = String;
+
+/// The connections to the other nodes, by node id: a client, or why there is none
+pub(crate) type NodeConnections = Arc<RwLock<BTreeMap<i32, Result<Mutex<RppdNodeClient<Channel>>, String>>>>;
 
 /// Topic definition extracted from topic type and event
 pub(crate) type TopicDef = String;
@@ -145,6 +147,8 @@ pub struct RppdNodeCluster {
     pub(crate) master_epoch: Arc<AtomicU64>,
     /// is the node loaded all logs
     pub(crate) started: Arc<AtomicBool>,
+    /// [rppd-spare] takes queue messages: see `RppdConfig::consume`, `set_consume`
+    pub(crate) consume: Arc<AtomicBool>,
     pub(crate) node_id: Arc<AtomicI32>,
     pub(crate) master_id: Arc<AtomicI32>,
     /// configured
@@ -168,7 +172,7 @@ pub struct RppdNodeCluster {
     pub(crate) stat: Arc<RwLock<ClusterStat>>,
 
     /// connections to nodes
-    pub(crate) node_connections: Arc<RwLock<BTreeMap<i32, Result<Mutex<RppdNodeClient<Channel>>, String>>>>,
+    pub(crate) node_connections: NodeConnections,
 
     /// connections to nodes, mostly use by master
     /// host to node_id
@@ -280,11 +284,11 @@ pub(crate) fn own_fns(table: &str, topics: &HashSet<TopicType>,
 }
 
 #[inline]
-fn make_sql_cnd(input: &Vec<PkColumn>) -> String {
+fn make_sql_cnd(input: &[PkColumn]) -> String {
     let mut sql = String::new();
-    for idx in 0..input.len() {
+    for (idx, c) in input.iter().enumerate() {
         if idx > 0 { sql.push_str(" and "); }
-        sql.push_str(format!("{} = ${}", input[idx].column_name, idx + 1).as_str());
+        sql.push_str(format!("{} = ${}", c.column_name, idx + 1).as_str());
     }
     sql
 }
@@ -301,6 +305,8 @@ pub type SecretOpener = std::sync::Arc<dyn Fn(&str) -> Result<Vec<u8>, String> +
 /// `SECRET.check`, for the names it lists only (py.rs).
 pub type SecretChecker = std::sync::Arc<dyn Fn(&str, &[u8]) -> Result<bool, String> + Send + Sync>;
 
+// the variants stay unboxed: an embedder (ytserv) builds them, and a Box would change that public API
+#[allow(clippy::large_enum_variant)]
 pub enum ConfigurationRequest {
     #[cfg(feature = "tracer")] Tracer(Option<SdkTracer>),
     /// [otel] the host's meter for rppd's instruments (metrics.rs); `None` takes them away
@@ -345,7 +351,7 @@ impl RppdNodeCluster {
             (format!("{}:{}", cfg.bind, cfg.port), RpHost::select_active(&cfg))
         };
 
-        let sql = if x.pks.len() == 0 { sql } else { format!("{} and {}", sql, make_sql_cnd(&x.pks)) };
+        let sql = if x.pks.is_empty() { sql } else { format!("{} and {}", sql, make_sql_cnd(&x.pks)) };
         let mut r = sqlx::query_as::<_, RpHost>(sqlx::AssertSqlSafe(sql));
         // PK ID set for Hosts is redundant, because config table has only one int PK, but use of common struct dictate to perform this way
         for x in &x.pks {
@@ -375,8 +381,8 @@ impl RppdNodeCluster {
                 let known = self.nodes.read().await.get(&n.id).map(|nx| nx.host.clone());
                 if known.as_ref() != Some(&n.host) { // new, or the node changed
                     let c = n.connect().await;
-                    self.node_connections.write().await.insert(n.id.clone(), c);
-                    self.nodes.write().await.insert(n.id.clone(), n);
+                    self.node_connections.write().await.insert(n.id, c);
+                    self.nodes.write().await.insert(n.id, n);
                 }
             }
         }
@@ -395,22 +401,19 @@ impl RppdNodeCluster {
     /// `|`, not `||`: a table's ticks count on through a whole reload.
     pub(crate) async fn reload_stale(&self) {
         let whole = whole_tick(&self.reload_clock);
-        if stale_tick(&self.fns_stale) | whole {
-            if let Err(e) = self.reload_fs(&None).await {
+        if stale_tick(&self.fns_stale) | whole
+            && let Err(e) = self.reload_fs(&None).await {
                 warn!(self.log, "{}{}", LP, e);
             }
-        }
-        if stale_tick(&self.cron_stale) | whole {
-            if let Err(e) = self.reload_cron(&None).await {
+        if stale_tick(&self.cron_stale) | whole
+            && let Err(e) = self.reload_cron(&None).await {
                 warn!(self.log, "{}{}", LP, e);
             }
-        }
         // embedded, the cluster's own roster is told over its own path
-        if stale_tick(&self.hosts_stale) | (whole && cfg!(not(feature = "lib-embedded"))) {
-            if let Err(e) = self.reload_hosts(&DbEventRequest::default()).await {
+        if stale_tick(&self.hosts_stale) | (whole && cfg!(not(feature = "lib-embedded")))
+            && let Err(e) = self.reload_hosts(&DbEventRequest::default()).await {
                 warn!(self.log, "{}{}", LP, e);
             }
-        }
     }
 
     /// load all or reload one or remove one function, include load/remove fs_logs
@@ -422,7 +425,7 @@ impl RppdNodeCluster {
         let has = crate::rd_test::table_columns(&self.db(), &schema, "rppd_function").await
             .map_err(|e| tr!("cfg.load_fns", sql = "information_schema.columns", err = e))?;
         let sql = select_fn(schema.as_str(), &has);
-        let sql = if x.is_none() || x.as_ref().unwrap().pks.len() == 0 { sql } else {
+        let sql = if x.is_none() || x.as_ref().unwrap().pks.is_empty() { sql } else {
             format!("{} where {}", sql, make_sql_cnd(&x.as_ref().unwrap().pks))
         };
         let mut r = sqlx::query_as::<_, RpFn>(sqlx::AssertSqlSafe(sql.as_str()));
@@ -470,10 +473,10 @@ impl RppdNodeCluster {
                             submap.insert(RpFnId::fromf(&f));
                         }
                     }
-                    map.insert(f.id.clone(), f.watch_init(&self).await);
+                    map.insert(f.id, f.watch_init(self).await);
                 }
                 Some(fx) => {
-                    fx.merge(f, &self).await;
+                    fx.merge(f, self).await;
                 }
             }
         }
@@ -563,12 +566,14 @@ impl RppdNodeCluster {
         let etcd = EtcdConnector::connect(&c, &log).await;
 
 
+        let consume = c.consume;
         let cluster = RppdNodeCluster {
             cfg: Arc::new(RwLock::new(c)),
-            cfg_db: cfg_db,
+            cfg_db,
             master: Arc::new(AtomicBool::new(false)),
             master_epoch: Arc::new(AtomicU64::new(0)),
             started: Arc::new(AtomicBool::new(false)),
+            consume: Arc::new(AtomicBool::new(consume)),
             node_id: Arc::new(AtomicI32::new(id)),
             master_id: Arc::new(AtomicI32::new(master_id)),
             max_db_connections: Arc::new(AtomicU16::new(10)),
@@ -711,7 +716,7 @@ impl RppdNodeCluster {
             } else { true });
         if rm > 0 {
             let max = self.max_context.load(Ordering::Relaxed);
-            self.max_context.store(if max > rm { max - rm } else { 0 }, Ordering::Relaxed);
+            self.max_context.store(max.saturating_sub(rm), Ordering::Relaxed);
         }
         rm
     }
@@ -741,7 +746,7 @@ impl RppdNodeCluster {
                                 traceparent: &str,
     ) -> Result<ScheduleResult, String>
     {
-        debug_assert!(fn_ids.len() > 0);
+        debug_assert!(!fn_ids.is_empty());
         let mut non_pk_column = vec![];
         let mut fn_logs = vec![];
         let mut trig_value = HashMap::new();
@@ -765,10 +770,10 @@ impl RppdNodeCluster {
                     non_pk_column.push(f.to_repeat_result());
                 }
 
-                if non_pk_column.len() == 0 {
+                if non_pk_column.is_empty() {
                     fn_logs.push(RpFnLog {
                         id: 0,
-                        node_id: node_id.clone(),
+                        node_id,
                         fn_id: f.id,
                         took_ms: None,
                         uuid: None,
@@ -797,7 +802,7 @@ impl RppdNodeCluster {
         // connection, and whoever holds that may have its own trigger's call waiting behind the write
         drop(map);
 
-        if non_pk_column.len() > 0 {
+        if !non_pk_column.is_empty() {
             trace!(self.log, "{}", tr!("cfg.repeat", columns = format!("{:?}", non_pk_column)));
             return Ok(ScheduleResult::Repeat(non_pk_column));
         }
@@ -807,14 +812,14 @@ impl RppdNodeCluster {
             if let Some(ref rn) = fl.rn_fn_id {
                 if rn.save {
                     let r = if rn.trig_value {
-                        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(RpFnLog::insert_v(&schema)))
+                        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(RpFnLog::insert_v(schema)))
                             .bind(fl.node_id)
                             .bind(fl.fn_id)
                             .bind(fl.trig_type)
                             .bind(fl.trig_value.clone())
                             .fetch_one(&self.db()).await.map_err(|e| e.to_string())?
                     } else {
-                        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(RpFnLog::insert(&schema)))
+                        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(RpFnLog::insert(schema)))
                             .bind(fl.node_id)
                             .bind(fl.fn_id)
                             .bind(fl.trig_type)
@@ -884,7 +889,7 @@ impl RppdNodeCluster {
         }
 
         debug!(self.log, "{}{}", LP, tr_lazy!("cfg.loading_fns"));
-        let _ = self.reload_fs(&None).await?;
+        self.reload_fs(&None).await?;
         // [breaker] this node's open breakers as it left them
         self.breaker_restore().await;
 
@@ -936,9 +941,9 @@ impl RppdNodeCluster {
             self.breaker_done(&f).await;
             // [shaper] a slot frees: the limit adapts, a waiting call goes
             self.shaper_done(&f).await;
-            if !self.master.load(Ordering::Relaxed) {
-                if let Some(node) = self.node_connections.read().await.get(&self.master_id.load(Ordering::Relaxed)) {
-                    if let Ok(master) = node {
+            if !self.master.load(Ordering::Relaxed)
+                && let Some(node) = self.node_connections.read().await.get(&self.master_id.load(Ordering::Relaxed))
+                    && let Ok(master) = node {
                         // notify master about completion of function execution and trigger to pick a next event in a queue
                         let _ = master.lock().await.complete(self.peer(StatusRequest {
                             config_schema_table: schema.clone(),
@@ -952,8 +957,6 @@ impl RppdNodeCluster {
                             ),
                         }).await).await;
                     }
-                }
-            }
             // info!("re-send1");
             if let Err(e) = self.sender.send(None).await {
                 warn!(self.log, "{}{}", LP, e);
@@ -1001,7 +1004,7 @@ impl RppdNodeCluster {
                 }
                 let p = match c {
                     None => {
-                        let p = match self.new_py_context(&fc).await
+                        let p = match self.new_py_context(fc).await
                             .map_err(|e| tr!("cfg.connect_py", url = &db_url, err = e)) {
                             Ok(p) => p,
                             Err(e) => {
@@ -1019,7 +1022,7 @@ impl RppdNodeCluster {
                 };
                 // [shaper] it starts now: a token taken earlier - a context made
                 // on the way - is dated here
-                self.shaper_started(&fc, &f);
+                self.shaper_started(fc, &f);
                 self.running.fetch_add(1, Ordering::Relaxed);
 
                 // thread this >
@@ -1112,8 +1115,8 @@ impl RppdNodeCluster {
                         self.respawn_drive(); // parked at capacity - come back for it
                     }
                 }
-                Some(node_id) => if let Some(node) = self.node_connections.read().await.get(&node_id) {
-                    if let Ok(node) = node {
+                Some(node_id) => if let Some(node) = self.node_connections.read().await.get(&node_id)
+                    && let Ok(node) = node {
                         let node_id = self.node_id.load(Ordering::Relaxed);
                         match node.lock().await.event(self.peer(l.to_event(tbl, node_id)).await).await {
                             Ok(_) => {}
@@ -1123,7 +1126,6 @@ impl RppdNodeCluster {
                             }
                         }
                     }
-                }
             }
         }
     }

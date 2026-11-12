@@ -44,14 +44,14 @@ impl RppdNode for RppdNodeCluster {
         self.cadence_seen(qn.name().as_str()).await;
 
         let fns = self.check_fn(&qn.name()).await;
-        if fns.len() > 0 {
+        if !fns.is_empty() {
             if let ScheduleResult::Some(fn_logs) = self.prepare(fns, &vec![
                 PkColumn {
                     column_name: "KEY".to_string(),
                     column_type: PkColumnType::String as i32,
                     pk_value: Some(PkValue::StringValue(request.key.clone())),
                 }
-            ], DbAction::Dual, &Some((request.key, request.value)), &request.traceparent).await.map_err(|e| Status::internal(e))? {
+            ], DbAction::Dual, &Some((request.key, request.value)), &request.traceparent).await.map_err(Status::internal)? {
                 for fn_log in fn_logs {
                     let _ = self.queueing(fn_log, false).await; // build a queue
                 }
@@ -67,7 +67,6 @@ impl RppdNode for RppdNodeCluster {
         self.event_impl(request.into_inner()).await
     }
 
-    ///
     async fn complete(&self, request: Request<StatusRequest>) -> Result<Response<SwitchResponse>, Status> {
         let _r = request.into_inner();
         // TODO use r.fn_log
@@ -122,11 +121,10 @@ impl RppdNodeCluster {
         // master is known or reachable does it still run it here.
         #[cfg(feature = "lib-embedded")]
         if request.optional_caller.is_none() && !self.master.load(Ordering::Relaxed)
-            && !self.is_own_table(&schema, &request.table_name) {
-            if let Some(r) = self.forward_to_master(&schema, &request).await {
+            && !self.is_own_table(&schema, &request.table_name)
+            && let Some(r) = self.forward_to_master(&schema, &request).await {
                 return r;
             }
-        }
 
         if !self.started.load(Ordering::Relaxed) {
             // not started
@@ -142,8 +140,8 @@ impl RppdNodeCluster {
         }
         
         let fns = self.check_fn(&request.table_name).await;
-        if fns.len() > 0 {
-            match self.prepare(fns, &request.pks, request.event_type(), &None, &request.traceparent).await.map_err(|e| Status::internal(e))? {
+        if !fns.is_empty() {
+            match self.prepare(fns, &request.pks, request.event_type(), &None, &request.traceparent).await.map_err(Status::internal)? {
                 ScheduleResult::Some(fn_logs) => {
                     for fn_log in fn_logs {
                         let _ = self.queueing(fn_log, false).await; // build a queue

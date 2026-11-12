@@ -120,11 +120,10 @@ impl RppdNodeCluster {
     /// the queue, or none could be made): a half-open breaker's probe slot is free
     /// again, or the probe that comes back would be held by its own breaker forever
     pub(crate) fn breaker_undo(&self, fn_id: i32) {
-        if let Some(rt) = self.breakers.lock().unwrap().get_mut(&fn_id) {
-            if rt.b.state == State::Half {
+        if let Some(rt) = self.breakers.lock().unwrap().get_mut(&fn_id)
+            && rt.b.state == State::Half {
                 rt.b.probing = false;
             }
-        }
     }
 
     /// An event finished (`took_ms` set, `error_msg` set when it raised): its breaker
@@ -232,12 +231,11 @@ impl RppdNodeCluster {
                 Transition::HalfOpened => info!(self.log, "{}{}", LP, tr!("breaker.half_open", id = fc.id)),
                 Transition::Closed => info!(self.log, "{}{}", LP, tr!("breaker.closed", id = fc.id, n = after.drain.len())),
             }
-            if *t != Transition::HalfOpened {
-                if let Some(q) = fc.notify_q.as_ref().filter(|q| !q.trim().is_empty()) {
+            if *t != Transition::HalfOpened
+                && let Some(q) = fc.notify_q.as_ref().filter(|q| !q.trim().is_empty()) {
                     let held = if *t == Transition::Closed { after.drain.len() } else { *held };
                     self.put_q(q, fc.id, breaker::message(fc.id, node, b, *t, held, now), "notify_q").await;
                 }
-            }
             if self.breaker_store.load(Ordering::Relaxed) {
                 let schema = self.cfg.read().await.schema.clone();
                 if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(STATE_UPSERT.replace("%SCHEMA%", schema.as_str())))
@@ -308,6 +306,8 @@ impl RppdNodeCluster {
     }
 
     /// The event is done with: an etcd message is deleted from its queue
+    // an external etcd keeps no queue here: nothing to delete, `f` unused there
+    #[cfg_attr(feature = "etcd-external", allow(unused_variables))]
     async fn ack(&self, f: &RpFnLog) {
         #[cfg(not(feature = "etcd-external"))]
         if let Some(key) = &f.key {

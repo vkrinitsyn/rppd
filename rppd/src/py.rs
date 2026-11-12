@@ -58,6 +58,8 @@ impl Drop for PyContext {
 }
 
 /// Queue configuration
+// a queue line holds mostly Local calls: a Box for each would cost more than the size it saves
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum PyCall {
     /// scheduled local future call. this._fn must set
@@ -251,7 +253,7 @@ impl RppdNodeCluster {
             py_rt: ManuallyDrop::new(module),
             py_db: ManuallyDrop::new(client),
             rt_etcd: ManuallyDrop::new(etcd_module),
-            py_etcd: etcd_client.map(|p| ManuallyDrop::new(p)),
+            py_etcd: etcd_client.map(ManuallyDrop::new),
             #[cfg(feature = "datafusion")]
             py_df,
             py_ch,
@@ -286,21 +288,21 @@ impl PyContext {
                 (DB, self.py_db.bind_borrowed(py)),
                 (TOPIC, fc.topic.clone().into_pyobject(py)?.into_any().as_borrowed()),
                 (TABLE, fc.schema_table.clone().into_pyobject(py)?.into_any().as_borrowed()),
-                (TRIG, x.trig_type.clone().into_pyobject(py)?.into_any().as_borrowed()),
+                (TRIG, x.trig_type.into_pyobject(py)?.into_any().as_borrowed()),
             ].into_py_dict(py)?;
             
             if let Some(pks) = &x.trig_value {
                 for (pk, pk_val) in pks.iter() {
-                    let _ = locals.set_item(pk.to_ascii_uppercase(), pk_val.into_pyobject(py)?.into_any().as_borrowed())?;
+                    locals.set_item(pk.to_ascii_uppercase(), pk_val.into_pyobject(py)?.into_any().as_borrowed())?;
                 }
             }
             
             if let Some(pks) = &x.value {
-                let _ = locals.set_item(VALUE, pks.into_pyobject(py)?.into_any().as_borrowed())?;
+                locals.set_item(VALUE, pks.into_pyobject(py)?.into_any().as_borrowed())?;
             }
             
             if let Ok(e) = &self.py_etcd {
-                let _ = locals.set_item(ETCD, e.bind_borrowed(py))?;
+                locals.set_item(ETCD, e.bind_borrowed(py))?;
             }
 
             #[cfg(feature = "datafusion")]
@@ -310,18 +312,18 @@ impl PyContext {
 
             // alongside DB, for a table with on_commit_clickhouse set
             if let Some(ch) = &self.py_ch {
-                let _ = locals.set_item(CH, ch.bind_borrowed(py))?;
+                locals.set_item(CH, ch.bind_borrowed(py))?;
             }
 
             // [otel] the trace this call is a span of
             if let Some(tp) = &x.traceparent {
-                let _ = locals.set_item(TRACE, tp.clone().into_pyobject(py)?.into_any().as_borrowed())?;
+                locals.set_item(TRACE, tp.clone().into_pyobject(py)?.into_any().as_borrowed())?;
             }
 
             // [skv] the secret store, for the names this function lists
             let names = secret_names(fc.secret_names.as_deref());
             if !names.is_empty() {
-                let _ = locals.set_item(SECRET, pyo3::Bound::new(py, Secrets { names })?)?;
+                locals.set_item(SECRET, pyo3::Bound::new(py, Secrets { names })?)?;
             }
 
             let capture_instance = if fc.fn_logging {

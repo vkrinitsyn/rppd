@@ -15,8 +15,8 @@ impl QueueType {
     pub(crate) fn return_back(&mut self, l: RpFnLog, topic: TopicDef) {
         // if let Some(uid) = &l.started {
         if let Some(f) = &l.fn_idp {
-            if let Some(queue) = self.0.get_mut(&f.priority) {
-                if let Some(line) = queue.get_mut(&topic) {
+            if let Some(queue) = self.0.get_mut(&f.priority)
+                && let Some(line) = queue.get_mut(&topic) {
                     // call must be InProgress with uuid match
                     if let Some(x) = line.pop_back() {
                         match x {
@@ -33,7 +33,6 @@ impl QueueType {
                         return;
                     }
                 }
-            }
             // [breaker] no line to return it to (the event never came through the
             // queue, or its line was cleaned up): a new line, never a dropped event
             let fid = f.clone();
@@ -69,13 +68,13 @@ impl QueueType {
         match self.0.get_mut(&fid.priority) {
             None => {
                 let mut queue = HashMap::new();
-                queue.insert(topic, l.to_line());
-                self.0.insert(fid.priority.clone(), queue);
+                queue.insert(topic, l.into_line());
+                self.0.insert(fid.priority, queue);
             }
             Some(queue) => {
                 match queue.get_mut(&topic) {
                     None => {
-                        queue.insert(topic, l.to_line());
+                        queue.insert(topic, l.into_line());
                     }
                     Some(line) => {
                         if push_back {
@@ -98,16 +97,13 @@ impl QueueType {
             for line in queue.values_mut() {
                 if line.is_empty() { continue; }
                 let calls = line.pop_back().unwrap();
-                if match &calls {
-                    PyCall::Local(_) => false,
-                    _ => true,
-                } {
+                if !matches!(calls, PyCall::Local(_)) {
                     line.push_back(calls); // return unchanged
                     continue; // [breaker] this line is busy: take the next topic, not the next priority
                 } else {
                     if let PyCall::Local(mut call) = calls {
                         if call.is_queue(false) {
-                            let py = PyCall::InProgressSaved(call.id, call.started.clone().unwrap_or(Instant::now()));
+                            let py = PyCall::InProgressSaved(call.id, call.started.unwrap_or(Instant::now()));
                             line.push_back(py);
                         }
                         result = Some(call.to_owned());
@@ -163,11 +159,10 @@ impl QueueType {
                                 }
                             }
                         }
-                        PyCall::InProgressSaved(l, u) => if let status_request::FnLog::FnLogId(fn_log_id) = &fn_log {
-                            if l == fn_log_id {
+                        PyCall::InProgressSaved(l, u) => if let status_request::FnLog::FnLogId(fn_log_id) = &fn_log
+                            && l == fn_log_id {
                                 return Some(status_response::FnLog::Status(FnStatus { status: Some(fn_status::Status::InProcSec(u.elapsed().as_secs() as u32)) }));
                             }
-                        }
                         PyCall::InProgressUnSaved(l, t) => if let status_request::FnLog::Uuid(fn_log_uuid) = &fn_log {
                             let u = fn_log_uuid.to_string();
                             if fn_log_uuid.len() <= 3 {
@@ -177,14 +172,10 @@ impl QueueType {
                             }
                         }
                         PyCall::RemoteSaved(n, l) => {
-                            match &fn_log {
-                                status_request::FnLog::FnLogId(fn_log_id) => {
-                                    if l == fn_log_id {
-                                        return Some(status_response::FnLog::Status(FnStatus { status: Some(fn_status::Status::RemoteHost(*n)) }));
-                                    }
+                            if let status_request::FnLog::FnLogId(fn_log_id) = &fn_log
+                                && l == fn_log_id {
+                                    return Some(status_response::FnLog::Status(FnStatus { status: Some(fn_status::Status::RemoteHost(*n)) }));
                                 }
-                                _ => {}
-                            }
                         }
                         PyCall::RemoteUnSaved(_, _) => {
                             //

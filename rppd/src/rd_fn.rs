@@ -130,6 +130,7 @@ impl RpFnId {
 
 #[derive(Debug, Clone)]
 #[allow(unused_variables, dead_code)]
+#[derive(Default)]
 pub struct RpFnId {
     pub(crate) id: i32,
     pub(crate) queue: bool,
@@ -142,17 +143,6 @@ pub struct RpFnId {
 }
 
 
-impl Default for RpFnId {
-    fn default() -> Self {
-        RpFnId {
-            id: 0,
-            queue: false,
-            priority: 0,
-            save: false,
-            trig_value: false,
-        }
-    }
-}
 
 impl Ord for RpFnId {
     #[inline]
@@ -294,7 +284,7 @@ impl RpFn {
     /// topic starts with dot, means topic value required
     #[inline]
     pub(crate) fn is_dot(&self) -> bool {
-        self.topic.len() > 0 && self.topic.as_bytes()[0] == b'.'
+        !self.topic.is_empty() && self.topic.as_bytes()[0] == b'.'
     }
 
     #[inline]
@@ -302,7 +292,7 @@ impl RpFn {
         let mut names = HashSet::new();
         let n: Vec<&str> = self.topic.split(".").collect();
         for pk in n {
-            if pk.len() > 0 {
+            if !pk.is_empty() {
                 names.insert(pk.to_string());
             }
         }
@@ -312,7 +302,7 @@ impl RpFn {
     /// create real topic name
     #[inline]
     pub(crate) fn to_topic(&self, l: &RpFnLog) -> TopicType {
-        if self.topic.len() == 0 {
+        if self.topic.is_empty() {
             self.schema_table.clone()
         } else if self.is_dot() {
             let mut name = String::new();
@@ -324,7 +314,7 @@ impl RpFn {
                     }
                 }
             }
-            if name.len() == 0 {
+            if name.is_empty() {
                 format!("{}{}=NULL", self.schema_table, self.topic)
             } else {
                 format!("{}{}", self.schema_table, name)
@@ -351,17 +341,17 @@ impl RpFn {
             match map.get_mut(&self.topic) {
                 None => {
                     let mut set = BTreeSet::new();
-                    set.insert(RpFnId::fromf(&self));
+                    set.insert(RpFnId::fromf(self));
                     map.insert(self.topic.clone(), set);
                 }
                 Some(set) => {
-                    set.insert(RpFnId::fromf(&self));
+                    set.insert(RpFnId::fromf(self));
                 }
             }
         }
 
         if f.schema_table != self.schema_table {
-            self.watch_merge(Some(&f.schema_table), &cluster).await;
+            self.watch_merge(Some(&f.schema_table), cluster).await;
             
             self.schema_table = f.schema_table;
             let mut map = cluster.fn_tt.write().await;
@@ -420,7 +410,7 @@ impl RpFn {
         match &log.trig_value {
             None => { input = "".to_string(); }
             Some(map) => for (k, v) in map.0.iter() {
-                if input.len() > 0 {
+                if !input.is_empty() {
                     input.push_str(", ");
                 }
                 input.push_str(format!("{}={}", k, v).as_str());
@@ -455,17 +445,17 @@ pub(crate) const DELETE_LOG: &str = "delete from %SCHEMA%.rppd_function_log fnl 
 
 impl RpFnLog {
     #[inline]
-    pub(crate) fn insert_v(schema: &String) -> String {
-        INSERT_LOG_V.replace("%SCHEMA%", schema.as_str())
+    pub(crate) fn insert_v(schema: &str) -> String {
+        INSERT_LOG_V.replace("%SCHEMA%", schema)
     }
     #[inline]
-    pub(crate) fn insert(schema: &String) -> String {
-        INSERT_LOG.replace("%SCHEMA%", schema.as_str())
+    pub(crate) fn insert(schema: &str) -> String {
+        INSERT_LOG.replace("%SCHEMA%", schema)
     }
 
     #[inline]
-    pub(crate) fn select(schema: &String) -> String {
-        SELECT_LOG.replace("%SCHEMA%", if schema.len() == 0 { "public" } else { schema.as_str() })
+    pub(crate) fn select(schema: &str) -> String {
+        SELECT_LOG.replace("%SCHEMA%", if schema.is_empty() { "public" } else { schema })
     }
 
     /// prefix is " where " OR " and "
@@ -493,10 +483,10 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) async fn update(&self, took: i64, r: Result<String, String>, db: Pool<Postgres>, schema: &String, log: &Logger) {
+    pub(crate) async fn update(&self, took: i64, r: Result<String, String>, db: Pool<Postgres>, schema: &str, log: &Logger) {
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set took_ms = $1, output = $2, error_msg = $3 where id = $4";
-        let sql = sql.replace("%SCHEMA%", schema.as_str());
+        let sql = sql.replace("%SCHEMA%", schema);
         if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(took)
             .bind(r.as_ref().ok())
@@ -508,11 +498,11 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) async fn update_err(&self, r: String, db: Pool<Postgres>, schema: &String, log: &Logger) {
+    pub(crate) async fn update_err(&self, r: String, db: Pool<Postgres>, schema: &str, log: &Logger) {
         // the error itself is logged where it happened (cfg.run_failed, cfg.connect_py)
         if self.id == 0 { return; }
         let sql = "update %SCHEMA%.rppd_function_log set error_msg = $1 where id = $2";
-        let sql = sql.replace("%SCHEMA%", schema.as_str());
+        let sql = sql.replace("%SCHEMA%", schema);
         if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(Some(r))
             .bind(self.id)
@@ -530,7 +520,7 @@ impl RpFnLog {
     }
 
     #[inline]
-    pub(crate) fn to_line(self) -> VecDeque<PyCall> {
+    pub(crate) fn into_line(self) -> VecDeque<PyCall> {
         let mut line = VecDeque::new();
         line.push_front(PyCall::Local(self));
         line
@@ -567,10 +557,9 @@ impl RpFnLog {
 }
 
 #[inline]
-
 #[allow(dead_code)]
 fn esca(input: &String) -> String {
-    if input.len() == 0 {
+    if input.is_empty() {
         "".to_string()
     } else if input.as_str() == "'" {
         "''".to_string()
@@ -580,10 +569,10 @@ fn esca(input: &String) -> String {
             input.to_string()
         } else {
             let mut x = String::new();
-            for a in 0..i.len() {
-                if !(a == 0 && i[a].len() == 0) {
+            for (a, part) in i.iter().enumerate() {
+                if !(a == 0 && part.is_empty()) {
                     x.push_str("''");
-                    x.push_str(i[a]);
+                    x.push_str(part);
                 }
             }
             x
@@ -654,6 +643,7 @@ mod tests {
     }
 
     // #[tokio::test]
+    #[allow(clippy::absurd_extreme_comparisons)] // its `r.len() >= 0` is always true: the select ran (fetch_all is Ok)
     async fn test_db() -> Result<(), String> {
         let url = fs::read_to_string(DB_URL_FILE)
             .map_err(|e| format!("{}\n\nAdd a one text file with \"postgresql://$USER:PWD@localhost/$DB\" to {} ox exclude from testing", e, DB_URL_FILE))?;

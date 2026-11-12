@@ -191,15 +191,14 @@ impl RppdNodeCluster {
                 }
             }
         }
-        if let Some(limit) = after.store {
-            if self.breaker_store.load(Ordering::Relaxed) {
+        if let Some(limit) = after.store
+            && self.breaker_store.load(Ordering::Relaxed) {
                 let schema = self.cfg.read().await.schema.clone();
                 if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(LIMIT_UPSERT.replace("%SCHEMA%", schema.as_str())))
                     .bind(fc.id).bind(node).bind(limit as i32).execute(&self.db()).await {
                     error!(self.log, "{}{}", LP, tr!("shaper.store", id = fc.id, err = e));
                 }
             }
-        }
         for ev in after.release {
             debug!(self.log, "{}{}", LP, tr_lazy!("shaper.release", id = fc.id));
             #[cfg(feature = "tracer")]

@@ -61,25 +61,22 @@ impl RpFnCron {
     }
 
     /// load all or reload one or remove one schedules
-
-    async fn start(&mut self, db: &Pool<Postgres>, schema: &String, target: String, log: &Logger) -> Option<String> {
+    async fn start(&mut self, db: &Pool<Postgres>, schema: &str, target: String, log: &Logger) -> Option<String> {
         let now = Utc::now();
 
-        if let Some(started_at) = self.started_at {
-            if let Some(finished_at) = self.finished_at {
-                if let Some(timeout) = self.timeout_sec {
-                    let duration = now - self.started_at.clone().unwrap();
+        if let Some(started_at) = self.started_at
+            && let Some(finished_at) = self.finished_at
+                && let Some(timeout) = self.timeout_sec {
+                    let duration = now - self.started_at.unwrap();
                     if timeout > 0 && duration.num_seconds() < timeout as i64 {
                         return None;
                     }
                 }
-            }
-        }
 
         self.started_at = Some(now);
         self.finished_at = None;
         let sql = "update %SCHEMA%.rppd_cron set started_at = current_timestamp, finished_at = NULL where id = $1";
-        let sql = sql.replace("%SCHEMA%", schema.as_str());
+        let sql = sql.replace("%SCHEMA%", schema);
         if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(self.id)
             .execute(db).await {
@@ -88,23 +85,21 @@ impl RpFnCron {
         }
 
         let sql = "update %SCHEMA%.rppd_cron set finished_at = current_timestamp, error_msg = ";
-        let mut esql = sql.replace("%SCHEMA%", schema.as_str());
+        let mut esql = sql.replace("%SCHEMA%", schema);
 
         let sql = "update %TARGET% set ";
         let mut sql = sql.replace("%TARGET%", target.as_str());
         sql.push_str(self.column_name.as_str());
-        if let Err(e) = match {
-            match &self.column_value {
-                None => {
-                    sql.push_str(" = NULL where id = $1");
-                    sqlx::query(sqlx::AssertSqlSafe(sql)).bind(self.id).execute(db).await
-                }
-                Some(v) => {
-                    sql.push_str(" = $1 where id = $2");
-                    sqlx::query(sqlx::AssertSqlSafe(sql))
-                        .bind(v)
-                        .bind(self.id).execute(db).await
-                }
+        if let Err(e) = match match &self.column_value {
+            None => {
+                sql.push_str(" = NULL where id = $1");
+                sqlx::query(sqlx::AssertSqlSafe(sql)).bind(self.id).execute(db).await
+            }
+            Some(v) => {
+                sql.push_str(" = $1 where id = $2");
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(v)
+                    .bind(self.id).execute(db).await
             }
         } {
             Ok(_) => {
@@ -136,7 +131,7 @@ impl RppdNodeCluster {
             let now = Utc::now();
             for (dt, id) in &cron.jobs {
                 if dt < &now {
-                     jobs.push((*id, dt.clone()));
+                     jobs.push((*id, *dt));
                 } else {
                     break;
                 }
@@ -244,11 +239,10 @@ impl CronContext {
                 // [cadence] the runtime of an unchanged cadence row carries over a reload:
                 // the master's own state writes reload the table, and a runtime rebuilt
                 // from the row would repeat the watch message it just sent
-                if let Some(o) = was {
-                    if o.cadence && o.cadence_cfg() == c.cadence_cfg() {
+                if let Some(o) = was
+                    && o.cadence && o.cadence_cfg() == c.cadence_cfg() {
                         c.cadence_rt = o.cadence_rt;
                     }
-                }
                 // evaluated by the master's cadence tick, never scheduled as a job
                 self.crons.insert(c.id, c);
                 continue;
@@ -256,7 +250,7 @@ impl CronContext {
             let kept = was.filter(|o| !o.cadence && o.cron == c.cron).and_then(|_| due.get(&c.id).copied());
             match kept.map_or_else(|| cron_parser::parse(c.cron.as_str(), &now), Ok) {
                 Ok(d) => {
-                    if c.error_msg.as_deref().map_or(false, |e| e.starts_with(PARSE_ERROR)) {
+                    if c.error_msg.as_deref().is_some_and(|e| e.starts_with(PARSE_ERROR)) {
                         store.push((c.id, None));
                         c.error_msg = None;
                     }

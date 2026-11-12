@@ -47,11 +47,11 @@ pub use rppd_common::protogen::rppc::DbEventRequest;
 
 /// Logging prefix, to start every loggin message with a string to use in a server as a module
 #[cfg(feature = "lib-embedded")]
-const LP: &'static str = "[py] ";
+const LP: &str = "[py] ";
 
 /// Logging prefix stub
 #[cfg(not(feature = "lib-embedded"))]
-const LP: &'static str = "";
+const LP: &str = "";
 
 
 const SG: &str = include_str!("../rppd.yaml");
@@ -112,7 +112,7 @@ impl RppdNodeCluster {
             addrsv[0].parse::<SocketAddr>().map_err(|e| tr!("lib.bind", bind = bind, err = e))?
         } else {
             let ips: Vec<std::net::IpAddr> = dns_lookup::lookup_host(bind).expect(&tr!("lib.lookup", bind = bind)).collect();
-            if ips.len() == 0 {
+            if ips.is_empty() {
                 return Err(format!("{}{}", LP, tr!("lib.no_ip", bind = bind)));
             }
             SocketAddr::new(ips[0], port)
@@ -171,11 +171,10 @@ impl RppdNodeCluster {
     pub(crate) async fn peer<T>(&self, m: T) -> tonic::Request<T> {
         let mut r = tonic::Request::new(m);
         let tag = self.cfg.read().await.db_tag.clone();
-        if !tag.is_empty() {
-            if let Ok(v) = tag.parse() {
+        if !tag.is_empty()
+            && let Ok(v) = tag.parse() {
                 r.metadata_mut().insert(router::DB_HEADER, v);
             }
-        }
         r
     }
 
@@ -189,6 +188,29 @@ impl RppdNodeCluster {
             info!(self.log, "{}{}", LP, tr!("lib.follow", was = was, now = master));
         }
         was != master
+    }
+
+    /// [rppd-spare] Whether this instance takes queue messages. Off: every watcher goes, and no
+    /// new one opens. On: one for each function on a queue. An embedder asserts it on every
+    /// tick, so only a change does anything.
+    pub async fn set_consume(&self, on: bool) {
+        if self.consume.swap(on, Ordering::Relaxed) == on {
+            return;
+        }
+        if on {
+            for f in self.fns.write().await.values_mut() {
+                f.watch_merge(None, self).await;
+            }
+        } else {
+            let ws: Vec<_> = self.watchers.write().await.drain().collect();
+            for (q, w) in ws {
+                #[allow(unused_mut)]
+                let mut w = w;
+                if let Err(e) = w.cancel().await {
+                    slog::warn!(self.log, "{}{}", LP, tr!("lib.unwatch", queue = q, err = e));
+                }
+            }
+        }
     }
 
     /// Whether this node currently executes functions.
@@ -210,12 +232,11 @@ impl RppdNodeCluster {
             let nodes = self.node_connections.read().await;
             for (k, n) in nodes.iter() {
                 if k != &node_id { // in case of self link
-                    if let Ok(node) = n {
-                        if let Ok(x) = node.lock().await.switch(self.peer(SwitchRequest { node_id }).await).await {
+                    if let Ok(node) = n
+                        && let Ok(x) = node.lock().await.switch(self.peer(SwitchRequest { node_id }).await).await {
                             info!(self.log, "{} {:?}", tr!("lib.switch", from = node_id.to_string(), to = k.to_string()), x);
                             break;
                         }
-                    }
                 }
             }
         }
