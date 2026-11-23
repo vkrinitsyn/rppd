@@ -675,3 +675,7 @@ mod skv_tests {
         assert_eq!(kind, tr!("py.check_type"));
     }
 }
+
+#[cfg(test)]
+#[path = "py_cov_test.rs"]
+mod cov_test;

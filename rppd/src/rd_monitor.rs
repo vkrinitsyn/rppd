@@ -350,3 +350,7 @@ mod tests {
         assert!(true);
     }
 }
+
+#[cfg(test)]
+#[path = "rd_monitor_cov_test.rs"]
+mod cov_test;

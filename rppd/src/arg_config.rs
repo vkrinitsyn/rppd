@@ -523,3 +523,7 @@ mod tests {
         assert_eq!(ipsd.len(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "arg_config_cov_test.rs"]
+mod cov_test;

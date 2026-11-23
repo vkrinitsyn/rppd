@@ -648,3 +648,7 @@ mod external_tests {
         assert!(tokio::time::timeout(std::time::Duration::from_millis(200), req_rx.recv()).await.is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "rd_etcd_cov_test.rs"]
+mod cov_test;

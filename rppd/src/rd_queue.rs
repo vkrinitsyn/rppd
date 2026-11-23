@@ -313,3 +313,6 @@ mod tests {
         assert!(q.pick_one().is_none());
     }
 }
+#[cfg(test)]
+#[path = "rd_queue_cov_test.rs"]
+mod cov_test;

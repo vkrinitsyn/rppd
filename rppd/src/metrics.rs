@@ -103,3 +103,7 @@ impl RppdNodeCluster {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "metrics_cov_test.rs"]
+mod cov_test;

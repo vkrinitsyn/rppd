@@ -1225,3 +1225,6 @@ mod tests {
         assert_eq!(super::own_fns("/q/a", tt.get("/q/a").unwrap(), &ti, &fns).len(), 1);
     }
 }
+#[cfg(test)]
+#[path = "rd_config_cov_test.rs"]
+mod cov_test;

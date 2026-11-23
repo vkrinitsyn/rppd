@@ -348,3 +348,7 @@ impl RppdNodeCluster {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "rd_breaker_cov_test.rs"]
+mod cov_test;

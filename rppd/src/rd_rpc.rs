@@ -257,3 +257,7 @@ impl RppdNodeCluster {
 }
 
 
+
+#[cfg(test)]
+#[path = "rd_rpc_cov_test.rs"]
+mod cov_test;

@@ -77,3 +77,7 @@ impl RppdTrigger for RppdRouter {
         RppdTrigger::status(&self.pick(&r).await?, r).await
     }
 }
+
+#[cfg(test)]
+#[path = "router_cov_test.rs"]
+mod cov_test;

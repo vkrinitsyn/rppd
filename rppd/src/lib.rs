@@ -254,3 +254,11 @@ mod tests {
         assert!(true);
     }
 }
+
+#[cfg(test)]
+#[path = "lib_cov_test.rs"]
+mod cov_test;
+
+#[cfg(test)]
+#[path = "cov_lock.rs"]
+mod cov_lock;

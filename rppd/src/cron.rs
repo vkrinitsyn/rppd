@@ -363,3 +363,7 @@ mod tests {
         assert!(store.is_empty(), "said once: {:?}", store);
     }
 }
+
+#[cfg(test)]
+#[path = "cron_cov_test.rs"]
+mod cov_test;

@@ -665,9 +665,7 @@ dependencies = [
 
 [[package]]
 name = "etcds"
-version = "0.24.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b256a5886f2c8e423e19b020b2bdc46488ce3d823cb1a32aad27a6a6b164a9ce"
+version = "0.25.0"
 dependencies = [
  "clap",
  "dns-lookup",
@@ -686,7 +684,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
- "uuid 1.29.2",
+ "uuid 1.29.0",
 ]
 
 [[package]]
@@ -1788,9 +1786,9 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.6"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ef0b569d1d907ab3a28596aee62cf1f61dacb0529a4bedcd8e7460e2d5228b4"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
 dependencies = [
  "bytes",
  "prost-derive",
@@ -1819,9 +1817,9 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.14.6"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
  "itertools 0.14.0",
@@ -1871,7 +1869,7 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
- "uuid 1.29.2",
+ "uuid 1.29.0",
 ]
 
 [[package]]
@@ -2055,7 +2053,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
- "uuid 1.29.2",
+ "uuid 1.29.0",
  "yaml-rust2",
 ]
 
@@ -2159,9 +2157,9 @@ dependencies = [
 
 [[package]]
 name = "schema_guard_tokio"
-version = "2.3.0"
+version = "2.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bf3aa9b978d4f7c782a1c22195bfce39fa51e9e11e6369a7dd0559792d50414"
+checksum = "ac41e5ef4324978d6c0f6384339793ece15ec6cb75e9870f3152524a09ea434a"
 dependencies = [
  "lazy_static",
  "regex",
@@ -3189,9 +3187,9 @@ checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
 
 [[package]]
 name = "uuid"
-version = "1.29.2"
+version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c"
+checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",

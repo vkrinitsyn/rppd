@@ -112,3 +112,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "schema_cov_test.rs"]
+mod cov_test;

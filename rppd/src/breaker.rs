@@ -418,3 +418,7 @@ mod tests {
         assert_eq!(m["attempts"], 5);
     }
 }
+
+#[cfg(test)]
+#[path = "breaker_cov_test.rs"]
+mod cov_test;

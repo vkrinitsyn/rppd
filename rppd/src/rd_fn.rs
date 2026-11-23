@@ -692,3 +692,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "rd_fn_cov_test.rs"]
+mod cov_test;

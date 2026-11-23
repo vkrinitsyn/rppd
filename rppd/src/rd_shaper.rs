@@ -234,3 +234,7 @@ impl RppdNodeCluster {
         Box::pin(async move { self.shaper_after(&fc, after).await })
     }
 }
+
+#[cfg(test)]
+#[path = "rd_shaper_cov_test.rs"]
+mod cov_test;

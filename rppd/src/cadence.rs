@@ -605,3 +605,7 @@ mod tests {
         assert_eq!(producer_key("/q/w", 7, t(12, 0, 0)), format!("/q/w/producer/7-{}", t(12, 0, 0).timestamp_millis()));
     }
 }
+
+#[cfg(test)]
+#[path = "cadence_cov_test.rs"]
+mod cov_test;

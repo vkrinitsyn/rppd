@@ -435,3 +435,7 @@ mod tests {
         assert_eq!((m["state"].as_str(), m["backlog"].as_u64()), (Some("over"), Some(5000)));
     }
 }
+
+#[cfg(test)]
+#[path = "shaper_cov_test.rs"]
+mod cov_test;

@@ -218,3 +218,7 @@ mod tests {
         assert!(table_columns(&pool, "s", "rppd_function").await.is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "rd_test_cov_test.rs"]
+mod cov_test;
