@@ -7,6 +7,7 @@ _version: 1
 main.name: "RPPD"
 main.about: "Rust Python Postgres Discovery：PostgreSQL の変更ごとに Python 関数を実行"
 main.error: "エラー：%{err}"
+main.lib: "この rppd は lib-embedded 機能付きでビルドされています：ライブラリ用のビルドで、このバイナリにサーバーは含まれません"
 args.usage: "1. PostgreSQL 拡張を作成：rppd.so と sql・control ファイルをコピーし、作成用 SQL を実行（選んだスキーマにいくつかのテーブルも作成）\n2. サービスを必要な数だけ起動；そのうち一つがマスター\n3. テーブルにトリガーを作成：insert または update で関数が呼ばれる"
 args.defaults: "任意の引数を順不同で数個まで：拡張のスキーマ（設定テーブルのある場所、拡張をインストールした場所）、末尾にドット；データベース接続 URL；バインドする IP とポート（':' 区切り）"
 args.more: "この 3 つに加えて、任意のものがいくつか：\n    --node=[このノードの UUID]\n    --cluster=[このクラスターの UUID]"

@@ -7,6 +7,7 @@ _version: 1
 main.name: "RPPD"
 main.about: "Rust Python Postgres Discovery：为 PostgreSQL 的每次变更运行一个 Python 函数"
 main.error: "错误：%{err}"
+main.lib: "此 rppd 以 lib-embedded 特性构建：这是库构建，此可执行文件不包含服务器"
 args.usage: "1. 创建 PostgreSQL 扩展：复制 rppd.so 及 sql、control 文件，再执行其创建 SQL——这也会在所选 schema 中建几张表\n2. 按需启动任意多个服务；其中一个是 master\n3. 在表上创建触发器：insert 或 update 会调用一个函数"
 args.defaults: "最多几个可选参数，顺序不限：扩展所在的 schema（即配置表所在处），以点结尾；数据库连接 URL；绑定的 IP 和端口，用 ':' 分隔"
 args.more: "除这三个外，还有几个可选参数：\n    --node=[本节点 UUID]\n    --cluster=[本集群 UUID]"

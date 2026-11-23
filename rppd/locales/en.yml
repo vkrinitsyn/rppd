@@ -7,6 +7,7 @@ _version: 1
 main.name: "RPPD"
 main.about: "Rust Python Postgres Discovery: a Python function for each change in PostgreSQL"
 main.error: "error: %{err}"
+main.lib: "this rppd was built with the lib-embedded feature: a library build, the server is not in this binary"
 args.usage: "1. Create the PostgreSQL extension: copy rppd.so and the sql and control files, then run its create SQL - this also creates a few tables in the chosen schema\n2. Run as many services as wanted; one of them is the master\n3. Create a trigger on a table: an insert or update fires a function"
 args.defaults: "Up to a few optional arguments, in any order: the extension's schema, where the config table is (where the extension is installed), ending with a dot; the database connection URL; the IP and port to bind to, separated by ':'"
 args.more: "and, beside those three, a few more optional ones:\n    --node=[this node's UUID]\n    --cluster=[this cluster's UUID]"

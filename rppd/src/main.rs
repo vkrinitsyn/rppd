@@ -31,6 +31,14 @@ compile_error!("only etcd-embeded or etcd-external feature can be enabled at thi
 // #[cfg(any(feature = "lib-embedded", feature = "tracer"))]
 // compile_error!("main is not compatible with selected features");
 
+/// [lib-embedded] A build with the feature is the library: this binary only says so, and an
+/// integration test of the package still links. The server's `main` is the one below
+#[cfg(feature = "lib-embedded")]
+fn main() -> ExitCode {
+    eprintln!("{}", rppde::tr!("main.lib"));
+    ExitCode::FAILURE
+}
+
 /// db connection is required
 #[cfg(not(feature = "lib-embedded"))]
 #[tokio::main(flavor = "multi_thread", worker_threads = 10)]

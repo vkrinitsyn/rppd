@@ -1,5 +1,7 @@
 //! The rppd binary run as a child process: exit codes for bad arguments and an unreachable
 //! database, and a start on a throwaway PostgreSQL that ends with SIGINT and a normal exit.
+//! Not in a `lib-embedded` build: its binary is no server (main.rs).
+#![cfg(not(feature = "lib-embedded"))]
 
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
