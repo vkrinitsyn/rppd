@@ -85,6 +85,7 @@ async fn cov_node(name: &str) -> Option<CovNode> {
     let pg = CovPg::start(name)?;
     let url = pg.url();
     crate::schema::migrate(&url, "public").await.expect("rppd tables from rppd.yaml");
+    let _env = crate::cov_lock::env_read();   // [test] not while another test sets a variable
     let c = crate::arg_config::RppdConfig {
         db_url: url,
         user: "postgres".into(),
@@ -97,6 +98,7 @@ async fn cov_node(name: &str) -> Option<CovNode> {
         cluster: uuid::Uuid::new_v4(),
         ..crate::arg_config::RppdConfig::default()
     };
+    drop(_env);
     let log = slog::Logger::root(slog::Discard, slog::o!());
     #[cfg(feature = "tracer")]
     let cluster = crate::rd_config::RppdNodeCluster::init(c, log, None).await.expect("cluster");

@@ -76,6 +76,7 @@ async fn node(pg: &Pg, schema: &str, port: u16) -> RppdNodeCluster {
     sqlx::query(sqlx::AssertSqlSafe(format!("create schema {}", schema))).execute(&pool).await.unwrap();
     pool.close().await;
     crate::ensure_schema(&pg.url, schema).await.expect("tables");
+    let _env = crate::cov_lock::env_read();   // [test] not while another test sets a variable
     let c = RppdConfig {
         name: "cov-cfg".into(),
         user: "postgres".into(),
@@ -85,6 +86,7 @@ async fn node(pg: &Pg, schema: &str, port: u16) -> RppdNodeCluster {
         port,
         ..Default::default()
     };
+    drop(_env);
     let cl = RppdNodeCluster::init(c, log(), #[cfg(feature = "tracer")] None).await.expect("init");
     for _ in 0..400 {
         if cl.is_started() { break; }
@@ -107,7 +109,9 @@ async fn a_node_that_cannot_reach_its_database_does_not_start() {
     let _etcd = crate::cov_lock::ETCD_LOCK.lock().await;
     let Some(pg) = Pg::start("noconn") else { return };
     let closed = format!("postgres://postgres@127.0.0.1:{}/postgres", free_port());
+    let _env = crate::cov_lock::env_read();   // [test] not while another test sets a variable
     let c = RppdConfig { db_url: closed, schema: "rppd_cfg0".into(), ..Default::default() };
+    drop(_env);
     let r = tokio::time::timeout(Duration::from_secs(15), RppdNodeCluster::init(c, log(), #[cfg(feature = "tracer")] None)).await;
     assert!(!matches!(r, Ok(Ok(_))), "no database, no node");
     drop(pg);

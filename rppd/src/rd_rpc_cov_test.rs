@@ -272,6 +272,7 @@ mod cluster {
 
     /// a node of its own on a free port, with its own throwaway PostgreSQL
     async fn node(pg: &Pg) -> RppdNodeCluster {
+        let _env = crate::cov_lock::env_read();   // [test] not while another test sets a variable
         let c = RppdConfig {
             name: "cov-node".to_string(),
             bind: "127.0.0.1".to_string(),
@@ -281,6 +282,7 @@ mod cluster {
             db_url: format!("postgres://postgres@127.0.0.1:{}/postgres", pg.port),
             ..RppdConfig::default()
         };
+        drop(_env);
     crate::ensure_schema(&c.db_url, "public").await.unwrap();
         let log = slog::Logger::root(slog::Discard, slog::o!());
         #[cfg(feature = "tracer")]

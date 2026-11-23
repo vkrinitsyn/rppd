@@ -2,13 +2,10 @@
 //! [coverage] the argument, file and environment parsing of RppdConfig
 
 use std::fs;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::*;
 
-/// The process's environment is shared by the tests: those that set a variable hold this
-static ENV: Mutex<()> = Mutex::new(());
 static FILES: AtomicU32 = AtomicU32::new(0);
 
 /// A unique path under the temp dir, removed by the caller
@@ -19,11 +16,14 @@ fn scratch(what: &str) -> String {
 
 /// Sets the variables for the closure, then puts each back as it was
 fn with_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
-    let _g = ENV.lock().unwrap_or_else(|p| p.into_inner());
+    // the binary's one lock of the environment (cov_lock.rs): a test of any module that builds a
+    // configuration from it waits, and so does another test that sets a variable
+    let _g = crate::cov_lock::env_write();
     let before: Vec<(String, Option<std::ffi::OsString>)> = vars.iter()
         .map(|(k, _)| (k.to_string(), env::var_os(k))).collect();
     for (k, v) in vars {
-        // SAFETY: every test that changes the environment holds ENV, and no other thread of this crate reads them meanwhile
+        // SAFETY: every test that changes the environment holds ENV_LOCK to write, and the tests that
+        // read it through RppdConfig hold it to read
         unsafe {
             match v {
                 Some(v) => env::set_var(k, v),
@@ -48,8 +48,16 @@ fn args(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
+/// The arguments parsed with no PGUSER and no PGPASSWORD in the environment - with one set the
+/// parser takes an argument for it - whatever the machine's own environment says, and never
+/// while another test has set one
+fn parsed(v: &[&str]) -> Result<RppdConfig, String> {
+    with_env(&[("PGUSER", None), ("PGPASSWORD", None)], || RppdConfig::new(args(v)))
+}
+
 #[test]
 fn the_display_lists_only_the_urls_that_are_set() {
+    let _env = crate::cov_lock::env_read();
     let mut c = RppdConfig { db_url: "postgresql://d".into(), ..Default::default() };
     let plain = format!("{}", c);
     assert_eq!(plain, "db: postgresql://d\n");
@@ -68,7 +76,7 @@ fn the_usage_names_the_default_database() {
 
 #[test]
 fn too_many_arguments_are_refused_and_none_is_the_default() {
-    let err = RppdConfig::new(args(&["test", "a", "b", "c", "d", "e", "f"])).unwrap_err();
+    let err = parsed(&["test", "a", "b", "c", "d", "e", "f"]).unwrap_err();
     assert!(err.starts_with("RPPD-E001"), "{}", err);
     let c = with_env(&[("MAX_QUEUE_SIZE", Some("42"))], || RppdConfig::new(args(&["test"])).unwrap());
     assert_eq!(c.schema, "public");
@@ -79,33 +87,33 @@ fn too_many_arguments_are_refused_and_none_is_the_default() {
 
 #[test]
 fn name_verbose_bind_port_and_ids_are_read_from_the_arguments() {
-    let c = RppdConfig::new(args(&["test", "--name=n1", "--verbose", "127.0.0.1:9100"])).unwrap();
+    let c = parsed(&["test", "--name=n1", "--verbose", "127.0.0.1:9100"]).unwrap();
     assert_eq!(c.name, "n1");
     assert!(c.verbose);
     assert_eq!(c.bind, "127.0.0.1");
     assert_eq!(c.port, 9100);
     assert!(c.consume && !c.force_master);
-    let d = RppdConfig::new(args(&["test", "--force_master=true"])).unwrap();
+    let d = parsed(&["test", "--force_master=true"]).unwrap();
     assert!(d.force_master);
 }
 
 #[test]
 fn a_port_that_is_no_number_is_refused() {
-    let err = RppdConfig::new(args(&["test", "127.0.0.1:x"])).unwrap_err();
+    let err = parsed(&["test", "127.0.0.1:x"]).unwrap_err();
     assert!(err.starts_with("RPPD-E002"), "{}", err);
 }
 
 #[test]
 fn a_schema_with_two_dots_is_refused_and_one_takes_its_first_part() {
-    let err = RppdConfig::new(args(&["test", "a.b.c"])).unwrap_err();
+    let err = parsed(&["test", "a.b.c"]).unwrap_err();
     assert!(err.starts_with("RPPD-E003"), "{}", err);
-    let c = RppdConfig::new(args(&["test", "a.b"])).unwrap();
+    let c = parsed(&["test", "a.b"]).unwrap();
     assert_eq!(c.schema, "a");
 }
 
 #[test]
 fn urls_of_the_three_kinds_are_taken_by_their_prefix() {
-    let c = RppdConfig::new(args(&["test", "postgresql://db", "df://scheduler:50050", "http://ch.lan:8123"])).unwrap();
+    let c = parsed(&["test", "postgresql://db", "df://scheduler:50050", "http://ch.lan:8123"]).unwrap();
     assert_eq!(c.db_url, "postgresql://db");
     assert_eq!(c.df_url.as_deref(), Some("df://scheduler:50050"));
     assert_eq!(c.ch_url.as_deref(), Some("http://ch.lan:8123"));
@@ -115,7 +123,7 @@ fn urls_of_the_three_kinds_are_taken_by_their_prefix() {
 fn a_file_argument_supplies_the_values_the_others_leave_out() {
     let f = scratch("db.cfg");
     fs::write(&f, "# a comment\n; another\n/ slashes\n[section]\n=empty key\nURL=postgresql://fromfile\n").unwrap();
-    let c = RppdConfig::new(args(&["test", &f, "x"])).unwrap();
+    let c = parsed(&["test", &f, "x"]).unwrap();
     fs::remove_file(&f).ok();
     assert_eq!(c.db_url, "postgresql://fromfile");
     assert_eq!(c.file.as_deref(), Some(f.as_str()));
@@ -126,7 +134,7 @@ fn a_file_argument_supplies_the_values_the_others_leave_out() {
 fn a_file_with_a_bind_supplies_it_to_a_bare_argument() {
     let f = scratch("bind.cfg");
     fs::write(&f, "bind : 127.0.0.1:9200\n").unwrap();
-    let c = RppdConfig::new(args(&["test", &f, "q"])).unwrap();
+    let c = parsed(&["test", &f, "q"]).unwrap();
     fs::remove_file(&f).ok();
     assert_eq!((c.bind.as_str(), c.port), ("127.0.0.1", 9200));
 }
@@ -137,7 +145,7 @@ fn a_directory_argument_reads_the_config_file_in_it() {
     fs::create_dir_all(&d).unwrap();
     let file = format!("{}/{}{}", d, DEFAULT_SCHEMA, CFG_TABLE);
     fs::write(&file, "bind=127.0.0.1:9300\n").unwrap();
-    let c = RppdConfig::new(args(&["test", &d, "q"])).unwrap();
+    let c = parsed(&["test", &d, "q"]).unwrap();
     fs::remove_dir_all(&d).ok();
     assert_eq!(c.port, 9300);
     assert_eq!(c.file.as_deref(), Some(d.as_str()));
@@ -147,7 +155,7 @@ fn a_directory_argument_reads_the_config_file_in_it() {
 fn an_argument_that_is_no_file_is_taken_as_a_schema() {
     let missing = scratch("missing.cfg");
     assert!(RppdConfig::try_load(&missing, &mut HashMap::new()).unwrap_err().starts_with("RPPD-E004"));
-    let c = RppdConfig::new(args(&["test", &missing])).unwrap();
+    let c = parsed(&["test", &missing]).unwrap();
     assert_eq!(c.file, None);
 }
 
@@ -207,6 +215,7 @@ fn a_table_name_is_put_in_its_schema() {
 
 #[test]
 fn the_database_url_carries_the_user_and_password() {
+    let _env = crate::cov_lock::env_read();
     let c = RppdConfig { db_url: "postgresql://old@host:5432/db".into(), user: "u".into(), pwd: "p".into(),
         ..Default::default() };
     assert_eq!(c.db_url(), "postgres://u:p@host:5432/db");

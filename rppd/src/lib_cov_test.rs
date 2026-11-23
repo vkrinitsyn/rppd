@@ -74,6 +74,7 @@ async fn node(pg: &Pg, schema: &str, port: u16) -> RppdNodeCluster {
     sqlx::query(sqlx::AssertSqlSafe(format!("create schema if not exists {}", schema))).execute(&pool).await.unwrap();
     pool.close().await;
     ensure_schema(&pg.url, schema).await.expect("tables");
+    let _env = crate::cov_lock::env_read();   // [test] not while another test sets a variable
     let c = crate::arg_config::RppdConfig {
         name: "cov-lib".into(),
         user: "postgres".into(),
@@ -83,6 +84,7 @@ async fn node(pg: &Pg, schema: &str, port: u16) -> RppdNodeCluster {
         port,
         ..Default::default()
     };
+    drop(_env);
     let cl = RppdNodeCluster::init(c, log(), #[cfg(feature = "tracer")] None).await.expect("init");
     for _ in 0..400 {
         if cl.is_started() { break; }
